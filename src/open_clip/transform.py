@@ -5,7 +5,7 @@ import torch.nn as nn
 import torchvision.transforms.functional as F
 
 from torchvision.transforms import Normalize, Compose, RandomResizedCrop, InterpolationMode, ToTensor, Resize, \
-    CenterCrop
+    CenterCrop, RandomHorizontalFlip, ColorJitter, RandomAffine, RandomCrop
 
 from .constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 
@@ -32,7 +32,8 @@ class ResizeMaxSize(nn.Module):
             img = F.resize(img, new_size, self.interpolation)
             pad_h = self.max_size - new_size[0]
             pad_w = self.max_size - new_size[1]
-            img = F.pad(img, padding=[pad_w//2, pad_h//2, pad_w - pad_w//2, pad_h - pad_h//2], fill=self.fill)
+            img = F.pad(img, padding=[
+                        pad_w//2, pad_h//2, pad_w - pad_w//2, pad_h - pad_h//2], fill=self.fill)
         return img
 
 
@@ -63,10 +64,15 @@ def image_transform(
     normalize = Normalize(mean=mean, std=std)
     if is_train:
         return Compose([
-            RandomResizedCrop(image_size, scale=(0.9, 1.0), interpolation=InterpolationMode.BICUBIC),
+            RandomHorizontalFlip(0.5),
+            ColorJitter(0.2, 0.2),
+            RandomAffine(degrees=10, scale=(0.8, 1.1),
+                         translate=(0.0625, 0.0625)),
+            Resize(256, interpolation=InterpolationMode.BICUBIC),
+            RandomCrop((224, 224)),
             _convert_to_rgb,
             ToTensor(),
-            normalize,
+            normalize,  # needs to be adapted for our data
         ])
     else:
         if resize_longest_max:
@@ -75,8 +81,8 @@ def image_transform(
             ]
         else:
             transforms = [
-                Resize(image_size, interpolation=InterpolationMode.BICUBIC),
-                CenterCrop(image_size),
+                Resize(256, interpolation=InterpolationMode.BICUBIC),
+                RandomCrop((224, 224)),
             ]
         transforms.extend([
             _convert_to_rgb,
