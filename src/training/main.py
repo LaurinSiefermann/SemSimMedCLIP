@@ -1,3 +1,10 @@
+from training.train import train_one_epoch, evaluate
+from training.scheduler import cosine_lr
+from training.params import parse_args
+from training.logger import setup_logging
+from training.distributed import is_master, init_distributed_device, world_info_from_env
+from training.data import get_data
+from open_clip import create_model_and_transforms, trace_model, get_tokenizer
 import logging
 import os
 import sys
@@ -9,6 +16,9 @@ import torch
 from torch import optim
 from torch.cuda.amp import GradScaler
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
+# import different logging tools
 try:
     import wandb
 except ImportError:
@@ -19,18 +29,11 @@ try:
 except ImportError:
     tensorboard = None
 
+# horovod: used for training on multiple GPUs
 try:
     import horovod.torch as hvd
 except ImportError:
     hvd = None
-
-from open_clip import create_model_and_transforms, trace_model, get_tokenizer
-from training.data import get_data
-from training.distributed import is_master, init_distributed_device, world_info_from_env
-from training.logger import setup_logging
-from training.params import parse_args
-from training.scheduler import cosine_lr
-from training.train import train_one_epoch, evaluate
 
 
 def random_seed(seed=42, rank=0):
@@ -46,6 +49,8 @@ def main(args):
         # This enables tf32 on Ampere GPUs which is only 8% slower than
         # float16 and almost as accurate as float32
         # This was a default in pytorch until 1.12
+
+        # Performs calculations in float32 but stores parameters in float16
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = False
@@ -64,6 +69,7 @@ def main(args):
             f"p_{args.precision}",
         ])
 
+    # argumant stuff for distibuted training
     # discover initial world args early so we can log properly
     args.distributed = False
     args.local_rank, args.rank, args.world_size = world_info_from_env()
@@ -80,18 +86,21 @@ def main(args):
             )
             return -1
 
-    # Set logger
+    # Set logger / logging Debug = all log messages, Info = only INFO, WARNING, ERROR, or CRITICAL messages
     args.log_level = logging.DEBUG if args.debug else logging.INFO
     setup_logging(args.log_path, args.log_level)
 
     # fully initialize distributed device environment
+    # single gpu case = "cuda:0"
     device = init_distributed_device(args)
-
+    # logging checkpoints and tensorboard
     args.wandb = 'wandb' in args.report_to or 'all' in args.report_to
     args.tensorboard = 'tensorboard' in args.report_to or 'all' in args.report_to
     if is_master(args):
-        args.tensorboard_path = os.path.join(args.logs, args.name, "tensorboard") if args.tensorboard else ''
-        args.checkpoint_path = os.path.join(args.logs, args.name, "checkpoints")
+        args.tensorboard_path = os.path.join(
+            args.logs, args.name, "tensorboard") if args.tensorboard else ''
+        args.checkpoint_path = os.path.join(
+            args.logs, args.name, "checkpoints")
         for dirname in [args.tensorboard_path, args.checkpoint_path]:
             if dirname:
                 os.makedirs(dirname, exist_ok=True)
@@ -119,6 +128,7 @@ def main(args):
         logging.info(f'Running with a single process. Device {args.device}.')
 
     random_seed(args.seed, 0)
+    # force_custom_text -> This parameter determines whether a custom text model should be used instead of the default one.
     model, preprocess_train, preprocess_val = create_model_and_transforms(
         args.model,
         args.pretrained,
@@ -132,10 +142,10 @@ def main(args):
         image_std=args.image_std,
     )
     random_seed(args.seed, args.rank)
-
+    # a way to convert your PyTorch model to a TorchScript format, which can then be run in a non-Python environment.
     if args.trace:
         model = trace_model(model, batch_size=args.batch_size, device=device)
-
+    # freezing layers according to LiT
     if args.lock_image:
         # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
         model.lock_image_tower(
@@ -167,7 +177,8 @@ def main(args):
         if args.ddp_static_graph:
             # this doesn't exist in older PyTorch, arg only added if enabled
             ddp_args['static_graph'] = True
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args)
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[device], **ddp_args)
 
     # create optimizer and scaler
     optimizer = None
@@ -175,13 +186,17 @@ def main(args):
 
     if args.train_data or args.dataset_type == "synthetic":
         assert not args.trace, 'Cannot train with traced model'
+        # filter parameters that shouldn't have weight decay applied to them (parameters that have less than 2 dimensions (like biases or scaling parameters), parameters in batch normalization (bn) or layer normalization (ln) layers, and the 'logit_scale' parameter.)
+        def exclude(
+            n, p): return p.ndim < 2 or "bn" in n or "ln" in n or "bias" in n or 'logit_scale' in n
 
-        exclude = lambda n, p: p.ndim < 2 or "bn" in n or "ln" in n or "bias" in n or 'logit_scale' in n
-        include = lambda n, p: not exclude(n, p)
+        def include(n, p): return not exclude(n, p)
 
         named_parameters = list(model.named_parameters())
-        gain_or_bias_params = [p for n, p in named_parameters if exclude(n, p) and p.requires_grad]
-        rest_params = [p for n, p in named_parameters if include(n, p) and p.requires_grad]
+        gain_or_bias_params = [
+            p for n, p in named_parameters if exclude(n, p) and p.requires_grad]
+        rest_params = [p for n, p in named_parameters if include(
+            n, p) and p.requires_grad]
 
         optimizer = optim.AdamW(
             [
@@ -193,10 +208,11 @@ def main(args):
             eps=args.eps,
         )
         if args.horovod:
-            optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters())
+            optimizer = hvd.DistributedOptimizer(
+                optimizer, named_parameters=model.named_parameters())
             hvd.broadcast_parameters(model.state_dict(), root_rank=0)
             hvd.broadcast_optimizer_state(optimizer, root_rank=0)
-
+        #  scale the gradients to help prevent underflow during the backward pass of mixed-precision training.
         scaler = GradScaler() if args.precision == "amp" else None
 
     # optionally resume from a checkpoint
@@ -215,19 +231,22 @@ def main(args):
                     optimizer.load_state_dict(checkpoint["optimizer"])
                 if scaler is not None and 'scaler' in checkpoint:
                     scaler.load_state_dict(checkpoint['scaler'])
-                logging.info(f"=> resuming checkpoint '{args.resume}' (epoch {start_epoch})")
+                logging.info(
+                    f"=> resuming checkpoint '{args.resume}' (epoch {start_epoch})")
             else:
                 # loading a bare (model only) checkpoint for fine-tune or evaluation
                 model.load_state_dict(checkpoint)
-                logging.info(f"=> loaded checkpoint '{args.resume}' (epoch {start_epoch})")
+                logging.info(
+                    f"=> loaded checkpoint '{args.resume}' (epoch {start_epoch})")
         else:
             logging.info("=> no checkpoint found at '{}'".format(args.resume))
 
     # initialize datasets
-    data = get_data(args, (preprocess_train, preprocess_val), epoch=start_epoch, tokenizer=get_tokenizer(args.model))
+    data = get_data(args, (preprocess_train, preprocess_val),
+                    epoch=start_epoch, tokenizer=get_tokenizer(args.model))
     assert len(data), 'At least one train or eval dataset must be specified.'
 
-    # create scheduler if train
+    # create scheduler if train / learning rate scheduler is designed to adjust the learning rate based on the number of epochs, using cosine annealing
     scheduler = None
     if 'train' in data and optimizer is not None:
         total_steps = data["train"].dataloader.num_batches * args.epochs
@@ -267,7 +286,8 @@ def main(args):
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, data, epoch, optimizer,
+                        scaler, scheduler, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
@@ -285,11 +305,13 @@ def main(args):
                 checkpoint_dict["scaler"] = scaler.state_dict()
 
             if completed_epoch == args.epochs or (
-                args.save_frequency > 0 and (completed_epoch % args.save_frequency) == 0
+                args.save_frequency > 0 and (
+                    completed_epoch % args.save_frequency) == 0
             ):
                 torch.save(
                     checkpoint_dict,
-                    os.path.join(args.checkpoint_path, f"epoch_{completed_epoch}.pt"),
+                    os.path.join(args.checkpoint_path,
+                                 f"epoch_{completed_epoch}.pt"),
                 )
             if args.save_most_recent:
                 torch.save(
@@ -313,7 +335,8 @@ def copy_codebase(args):
     current_code_path = os.path.realpath(__file__)
     for _ in range(3):
         current_code_path = os.path.dirname(current_code_path)
-    copytree(current_code_path, new_code_path, ignore=ignore_patterns('log', 'logs', 'wandb'))
+    copytree(current_code_path, new_code_path,
+             ignore=ignore_patterns('log', 'logs', 'wandb'))
     print("Done copying code.")
     return 1
 

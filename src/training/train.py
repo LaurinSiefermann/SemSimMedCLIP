@@ -13,6 +13,7 @@ try:
 except ImportError:
     wandb = None
 
+from open_clip import ModifiedClipLoss
 from open_clip import ClipLoss, get_cast_dtype
 from .distributed import is_master
 from .zero_shot import zero_shot_eval
@@ -21,6 +22,7 @@ from .precision import get_autocast
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
+
     def __init__(self):
         self.reset()
 
@@ -50,39 +52,59 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
     cast_dtype = get_cast_dtype(args.precision)
 
     model.train()
-    loss = ClipLoss(
-        local_loss=args.local_loss,
-        gather_with_grad=args.gather_with_grad,
-        cache_labels=True,
-        rank=args.rank,
-        world_size=args.world_size,
-        use_horovod=args.horovod)
 
-    data['train'].set_epoch(epoch)  # set epoch in process safe manner via sampler or shared_epoch
+    if args.loss_type == 'soft_clip':
+        loss = ModifiedClipLoss(
+            local_loss=args.local_loss,
+            gather_with_grad=args.gather_with_grad,
+            cache_labels=False,  # don't cache labels - in our use case they have to change every time
+            rank=args.rank,
+            world_size=args.world_size,
+            use_horovod=args.horovod)
+    else:
+        loss = ClipLoss(
+            local_loss=args.local_loss,
+            gather_with_grad=args.gather_with_grad,
+            cache_labels=False,  # dont cache labels - in our use case they have to change every time
+            rank=args.rank,
+            world_size=args.world_size,
+            use_horovod=args.horovod)
+
+    # set epoch in process safe manner via sampler or shared_epoch
+    data['train'].set_epoch(epoch)
     dataloader = data['train'].dataloader
     num_batches_per_epoch = dataloader.num_batches
     sample_digits = math.ceil(math.log(dataloader.num_samples + 1, 10))
-
+    #  used to track the average value of some quantity over time, such as the loss value during training (loss_m), the time it takes to process a batch of data
     loss_m = AverageMeter()
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     end = time.time()
     for i, batch in enumerate(dataloader):
         step = num_batches_per_epoch * epoch + i
-        
+
         if not args.skip_scheduler:
             scheduler(step)
 
-        images, texts = batch
+        images, raw_texts, tokenized_texts = batch
         images = images.to(device=device, dtype=cast_dtype, non_blocking=True)
-        texts = texts.to(device=device, non_blocking=True)
+        tokenized_texts = tokenized_texts.to(device=device, non_blocking=True)
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
-
+        # enables automatic mixed precision (AMP)
         with autocast():
-            image_features, text_features, logit_scale = model(images, texts)
-            total_loss = loss(image_features, text_features, logit_scale)
+            # forward pass of the model. The model is applied to the images and texts data to produce image features, text features, and the logit scale.
+            image_features, text_features, logit_scale = model(
+                images, tokenized_texts)
+
+            # loss function is applied to the outputs of the model to calculate the total loss.
+            if args.loss_type == 'soft_clip':
+                total_loss = loss(image_features, text_features,
+                                  logit_scale, raw_texts)
+            else:
+                total_loss = loss(image_features, text_features,
+                                  logit_scale)
 
         if scaler is not None:
             scaler.scale(total_loss).backward()
@@ -90,19 +112,22 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
                 optimizer.synchronize()
                 scaler.unscale_(optimizer)
                 if args.grad_clip_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, norm_type=2.0)
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), args.grad_clip_norm, norm_type=2.0)
                 with optimizer.skip_synchronize():
                     scaler.step(optimizer)
             else:
                 if args.grad_clip_norm is not None:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, norm_type=2.0)
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), args.grad_clip_norm, norm_type=2.0)
                 scaler.step(optimizer)
             scaler.update()
         else:
             total_loss.backward()
             if args.grad_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, norm_type=2.0)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), args.grad_clip_norm, norm_type=2.0)
             optimizer.step()
 
         # Note: we clamp to 4.6052 = ln(100), as in the original paper.
@@ -178,11 +203,13 @@ def evaluate(model, data, epoch, args, tb_writer=None):
         with torch.no_grad():
             for i, batch in enumerate(dataloader):
                 images, texts = batch
-                images = images.to(device=device, dtype=cast_dtype, non_blocking=True)
+                images = images.to(
+                    device=device, dtype=cast_dtype, non_blocking=True)
                 texts = texts.to(device=device, non_blocking=True)
 
                 with autocast():
-                    image_features, text_features, logit_scale = model(images, texts)
+                    image_features, text_features, logit_scale = model(
+                        images, texts)
                     # features are accumulated in CPU tensors, otherwise GPU memory exhausted quickly
                     # however, system RAM is easily exceeded and compute time becomes problematic
                     all_image_features.append(image_features.cpu())
@@ -212,7 +239,8 @@ def evaluate(model, data, epoch, args, tb_writer=None):
             )
             loss = cumulative_loss / num_samples
             metrics.update(
-                {**val_metrics, "val_loss": loss.item(), "epoch": epoch, "num_samples": num_samples}
+                {**val_metrics, "val_loss": loss.item(), "epoch": epoch,
+                 "num_samples": num_samples}
             )
 
     if not metrics:
@@ -242,10 +270,12 @@ def evaluate(model, data, epoch, args, tb_writer=None):
 
 def get_metrics(image_features, text_features, logit_scale):
     metrics = {}
-    logits_per_image = (logit_scale * image_features @ text_features.t()).detach().cpu()
+    logits_per_image = (logit_scale * image_features @
+                        text_features.t()).detach().cpu()
     logits_per_text = logits_per_image.t().detach().cpu()
 
-    logits = {"image_to_text": logits_per_image, "text_to_image": logits_per_text}
+    logits = {"image_to_text": logits_per_image,
+              "text_to_image": logits_per_text}
     ground_truth = torch.arange(len(text_features)).view(-1, 1)
 
     for name, logit in logits.items():

@@ -16,7 +16,7 @@ def parse_args(args):
         "--train-data",
         type=str,
         default=None,
-        help="Path to csv filewith training data",
+        help="Path to csv file with training data",
     )
     parser.add_argument(
         "--val-data",
@@ -38,7 +38,7 @@ def parse_args(args):
     )
     parser.add_argument(
         "--dataset-type",
-        choices=["webdataset", "csv", "synthetic", "auto"],
+        choices=["webdataset", "csv", "synthetic", "auto", "pkl"],
         default="auto",
         help="Which type of dataset to process."
     )
@@ -105,10 +105,14 @@ def parse_args(args):
     parser.add_argument(
         "--epochs", type=int, default=32, help="Number of epochs to train for."
     )
-    parser.add_argument("--lr", type=float, default=None, help="Learning rate.")
-    parser.add_argument("--beta1", type=float, default=None, help="Adam beta 1.")
-    parser.add_argument("--beta2", type=float, default=None, help="Adam beta 2.")
-    parser.add_argument("--eps", type=float, default=None, help="Adam epsilon.")
+    parser.add_argument("--lr", type=float, default=None,
+                        help="Learning rate.")
+    parser.add_argument("--beta1", type=float,
+                        default=None, help="Adam beta 1.")
+    parser.add_argument("--beta2", type=float,
+                        default=None, help="Adam beta 2.")
+    parser.add_argument("--eps", type=float, default=None,
+                        help="Adam epsilon.")
     parser.add_argument("--wd", type=float, default=0.2, help="Weight decay.")
     parser.add_argument(
         "--warmup", type=int, default=10000, help="Number of steps to warmup for."
@@ -311,7 +315,12 @@ def parse_args(args):
         action='store_true',
         help="Freeze BatchNorm running stats in image tower for any locked layers.",
     )
-
+    parser.add_argument(
+        "--loss-type",
+        default='soft_clip',
+        type=str,
+        help="Options are ['soft_clip', 'clip']"
+    )
 
     args = parser.parse_args(args)
 

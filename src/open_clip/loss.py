@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+from sentence_transformers import SentenceTransformer, util
+
 try:
     import torch.distributed.nn
     from torch import distributed as dist
@@ -36,8 +38,10 @@ def gather_features(
                 all_text_features = hvd.allgather(text_features)
             if not local_loss:
                 # ensure grads for local rank when all_* features don't have a gradient
-                gathered_image_features = list(all_image_features.chunk(world_size, dim=0))
-                gathered_text_features = list(all_text_features.chunk(world_size, dim=0))
+                gathered_image_features = list(
+                    all_image_features.chunk(world_size, dim=0))
+                gathered_text_features = list(
+                    all_text_features.chunk(world_size, dim=0))
                 gathered_image_features[rank] = image_features
                 gathered_text_features[rank] = text_features
                 all_image_features = torch.cat(gathered_image_features, dim=0)
@@ -45,11 +49,15 @@ def gather_features(
     else:
         # We gather tensors from all gpus
         if gather_with_grad:
-            all_image_features = torch.cat(torch.distributed.nn.all_gather(image_features), dim=0)
-            all_text_features = torch.cat(torch.distributed.nn.all_gather(text_features), dim=0)
+            all_image_features = torch.cat(
+                torch.distributed.nn.all_gather(image_features), dim=0)
+            all_text_features = torch.cat(
+                torch.distributed.nn.all_gather(text_features), dim=0)
         else:
-            gathered_image_features = [torch.zeros_like(image_features) for _ in range(world_size)]
-            gathered_text_features = [torch.zeros_like(text_features) for _ in range(world_size)]
+            gathered_image_features = [torch.zeros_like(
+                image_features) for _ in range(world_size)]
+            gathered_text_features = [torch.zeros_like(
+                text_features) for _ in range(world_size)]
             dist.all_gather(gathered_image_features, image_features)
             dist.all_gather(gathered_text_features, text_features)
             if not local_loss:
@@ -117,5 +125,43 @@ class ClipLoss(nn.Module):
         total_loss = (
             F.cross_entropy(logits_per_image, labels) +
             F.cross_entropy(logits_per_text, labels)
-            ) / 2
+        ) / 2
         return total_loss
+
+# TODO: Rename at the end
+
+
+class ModifiedClipLoss(ClipLoss):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.threshold = 0.7151462626262626
+        self.temperature = 0.07
+
+    def compute_similarity(self, text_features):
+        # Compute sBERT embeddings for each text feature
+        sbert_embeddings = self.sbert_model.encode(
+            text_features, convert_to_tensor=True)
+        # Compute cosine similarity between every pair of sentences
+        similarity_matrix = util.pytorch_cos_sim(
+            sbert_embeddings, sbert_embeddings)
+        return similarity_matrix
+
+    def forward(self, image_features, text_features, logit_scale, raw_texts):
+        # Compute similarity matrix for raw text data
+        similarity_matrix = self.compute_similarity(raw_texts)
+        # Determine positive pairs based on similarity matrix and some threshold
+        positive_pairs = (similarity_matrix > self.threshold).float()
+        # Calculate similarity between image and text features
+        logits_per_image = logit_scale * image_features @ text_features.T
+        logits_per_text = logit_scale * text_features @ image_features.T
+        # Apply temperature
+        logits_per_image /= self.temperature
+        logits_per_text /= self.temperature
+        # Compute SNN loss using positive pairs
+        snn_loss_v_to_u = -torch.log(torch.sum(torch.exp(logits_per_image)
+                                     * positive_pairs) / torch.sum(torch.exp(logits_per_image)))
+        snn_loss_u_to_v = -torch.log(torch.sum(torch.exp(logits_per_text.T)
+                                     * positive_pairs) / torch.sum(torch.exp(logits_per_text.T)))
+        snn_loss = (snn_loss_v_to_u + snn_loss_u_to_v) / 2
+        return snn_loss
