@@ -19,7 +19,8 @@ from .tokenizer import HFTokenizer, tokenize
 
 
 _MODEL_CONFIG_PATHS = [Path(__file__).parent / f"model_configs/"]
-_MODEL_CONFIGS = {}  # directory (model_name: config) of model architecture configs
+# directory (model_name: config) of model architecture configs
+_MODEL_CONFIGS = {}
 
 
 def _natural_key(string_):
@@ -44,7 +45,8 @@ def _rescan_model_configs():
             if all(a in model_cfg for a in ('embed_dim', 'vision_cfg', 'text_cfg')):
                 _MODEL_CONFIGS[cf.stem] = model_cfg
 
-    _MODEL_CONFIGS = {k: v for k, v in sorted(_MODEL_CONFIGS.items(), key=lambda x: _natural_key(x[0]))}
+    _MODEL_CONFIGS = {k: v for k, v in sorted(
+        _MODEL_CONFIGS.items(), key=lambda x: _natural_key(x[0]))}
 
 
 _rescan_model_configs()  # initial populate of model config registry
@@ -72,7 +74,8 @@ def get_model_config(model_name):
 
 def get_tokenizer(model_name):
     config = get_model_config(model_name)
-    tokenizer = HFTokenizer(config['text_cfg']['hf_tokenizer_name']) if 'hf_tokenizer_name' in config['text_cfg'] else tokenize
+    tokenizer = HFTokenizer(config['text_cfg']['hf_tokenizer_name']
+                            ) if 'hf_tokenizer_name' in config['text_cfg'] else tokenize
     return tokenizer
 
 
@@ -109,7 +112,8 @@ def create_model(
         pretrained_hf: bool = True,
         cache_dir: Optional[str] = None,
 ):
-    model_name = model_name.replace('/', '-')  # for callers using old naming with / in ViT names
+    # for callers using old naming with / in ViT names
+    model_name = model_name.replace('/', '-')
     if isinstance(device, str):
         device = torch.device(device)
 
@@ -127,7 +131,8 @@ def create_model(
         if model_cfg is not None:
             logging.info(f'Loaded {model_name} model config.')
         else:
-            logging.error(f'Model config for {model_name} not found; available models {list_models()}.')
+            logging.error(
+                f'Model config for {model_name} not found; available models {list_models()}.')
             raise RuntimeError(f'Model config for {model_name} not found.')
 
         if force_quick_gelu:
@@ -142,7 +147,8 @@ def create_model(
                 assert False, 'pretrained image towers currently only supported for timm models'
 
         cast_dtype = get_cast_dtype(precision)
-        custom_text = model_cfg.pop('custom_text', False) or force_custom_text or ('hf_model_name' in model_cfg.get('text_cfg', {}))
+        custom_text = model_cfg.pop('custom_text', False) or force_custom_text or (
+            'hf_model_name' in model_cfg.get('text_cfg', {}))
 
         if custom_text:
             if 'hf_model_name' in model_cfg.get('text_cfg', {}):
@@ -156,12 +162,14 @@ def create_model(
             checkpoint_path = ''
             pretrained_cfg = get_pretrained_cfg(model_name, pretrained)
             if pretrained_cfg:
-                checkpoint_path = download_pretrained(pretrained_cfg, cache_dir=cache_dir)
+                checkpoint_path = download_pretrained(
+                    pretrained_cfg, cache_dir=cache_dir)
             elif os.path.exists(pretrained):
                 checkpoint_path = pretrained
 
             if checkpoint_path:
-                logging.info(f'Loading pretrained {model_name} weights ({pretrained}).')
+                logging.info(
+                    f'Loading pretrained {model_name} weights ({pretrained}).')
                 load_checkpoint(model, checkpoint_path)
             else:
                 error_str = (
@@ -172,11 +180,14 @@ def create_model(
 
         model.to(device=device)
         if precision in ("fp16", "bf16"):
-            convert_weights_to_lp(model, dtype=torch.bfloat16 if precision == 'bf16' else torch.float16)
+            convert_weights_to_lp(
+                model, dtype=torch.bfloat16 if precision == 'bf16' else torch.float16)
 
         # set image / mean metadata from pretrained_cfg if available, or use default
-        model.visual.image_mean = pretrained_cfg.get('mean', None) or OPENAI_DATASET_MEAN
-        model.visual.image_std = pretrained_cfg.get('std', None) or OPENAI_DATASET_STD
+        model.visual.image_mean = pretrained_cfg.get(
+            'mean', None) or OPENAI_DATASET_MEAN
+        model.visual.image_std = pretrained_cfg.get(
+            'std', None) or OPENAI_DATASET_STD
 
         if jit:
             model = torch.jit.script(model)

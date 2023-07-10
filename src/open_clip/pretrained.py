@@ -11,7 +11,8 @@ from .version import __version__
 
 try:
     from huggingface_hub import hf_hub_download
-    hf_hub_download = partial(hf_hub_download, library_name="open_clip", library_version=__version__)
+    hf_hub_download = partial(
+        hf_hub_download, library_name="open_clip", library_version=__version__)
     _has_hf_hub = True
 except ImportError:
     hf_hub_download = None
@@ -85,7 +86,7 @@ _VITB32 = dict(
         "https://github.com/mlfoundations/open_clip/releases/download/v0.2-weights/vit_b_32-laion2b_e16-af8dbd0c.pth"),
     laion2b_s34b_b79k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-laion2B-s34B-b79K/')
 )
-
+# I guess I need to add PubMedClip here, because it has a ViT-Base-32 architecture + i found the attribute quickgelu
 _VITB32_quickgelu = dict(
     openai=_pcfg(
         "https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt"),
@@ -93,6 +94,8 @@ _VITB32_quickgelu = dict(
         "https://github.com/mlfoundations/open_clip/releases/download/v0.2-weights/vit_b_32-quickgelu-laion400m_e31-d867053b.pt"),
     laion400m_e32=_pcfg(
         "https://github.com/mlfoundations/open_clip/releases/download/v0.2-weights/vit_b_32-quickgelu-laion400m_e32-46683a32.pt"),
+    pubmedclip=_pcfg(
+        hf_hub='flaviagiammarino/pubmed-clip-vit-base-patch32/pytorch_model.bin')
 )
 
 _VITB16 = dict(
@@ -143,15 +146,18 @@ _VITg14 = dict(
 )
 
 _robertaViTB32 = dict(
-    laion2b_s12b_b32k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-roberta-base-laion2B-s12B-b32k/'),
+    laion2b_s12b_b32k=_pcfg(
+        hf_hub='laion/CLIP-ViT-B-32-roberta-base-laion2B-s12B-b32k/'),
 )
 
 _xlmRobertaBaseViTB32 = dict(
-    laion5b_s13b_b90k=_pcfg(hf_hub='laion/CLIP-ViT-B-32-xlm-roberta-base-laion5B-s13B-b90k/'),
+    laion5b_s13b_b90k=_pcfg(
+        hf_hub='laion/CLIP-ViT-B-32-xlm-roberta-base-laion5B-s13B-b90k/'),
 )
 
 _xlmRobertaLargeFrozenViTH14 = dict(
-    frozen_laion5b_s13b_b90k=_pcfg(hf_hub='laion/CLIP-ViT-H-14-frozen-xlm-roberta-large-laion5B-s13B-b90k/'),
+    frozen_laion5b_s13b_b90k=_pcfg(
+        hf_hub='laion/CLIP-ViT-H-14-frozen-xlm-roberta-large-laion5B-s13B-b90k/'),
 )
 
 _PRETRAINED = {
@@ -237,14 +243,16 @@ def download_pretrained_from_url(
     download_target = os.path.join(cache_dir, filename)
 
     if os.path.exists(download_target) and not os.path.isfile(download_target):
-        raise RuntimeError(f"{download_target} exists and is not a regular file")
+        raise RuntimeError(
+            f"{download_target} exists and is not a regular file")
 
     if os.path.isfile(download_target):
         if expected_sha256:
             if hashlib.sha256(open(download_target, "rb").read()).hexdigest().startswith(expected_sha256):
                 return download_target
             else:
-                warnings.warn(f"{download_target} exists, but the SHA256 checksum does not match; re-downloading the file")
+                warnings.warn(
+                    f"{download_target} exists, but the SHA256 checksum does not match; re-downloading the file")
         else:
             return download_target
 
@@ -259,7 +267,8 @@ def download_pretrained_from_url(
                 loop.update(len(buffer))
 
     if expected_sha256 and not hashlib.sha256(open(download_target, "rb").read()).hexdigest().startswith(expected_sha256):
-        raise RuntimeError(f"Model has been downloaded but the SHA256 checksum does not not match")
+        raise RuntimeError(
+            f"Model has been downloaded but the SHA256 checksum does not not match")
 
     return download_target
 
@@ -279,7 +288,8 @@ def download_pretrained_from_hf(
         cache_dir: Union[str, None] = None,
 ):
     has_hf_hub(True)
-    cached_file = hf_hub_download(model_id, filename, revision=revision, cache_dir=cache_dir)
+    cached_file = hf_hub_download(
+        model_id, filename, revision=revision, cache_dir=cache_dir)
     return cached_file
 
 
@@ -299,7 +309,8 @@ def download_pretrained(
         download_url = ''
 
     if download_url:
-        target = download_pretrained_from_url(download_url, cache_dir=cache_dir)
+        target = download_pretrained_from_url(
+            download_url, cache_dir=cache_dir)
     elif download_hf_hub:
         has_hf_hub(True)
         # we assume the hf_hub entries in pretrained config combine model_id + filename in
@@ -307,7 +318,8 @@ def download_pretrained(
         # use 'open_clip_pytorch_model.bin' default, there must be a trailing slash 'org/model_name/'.
         model_id, filename = os.path.split(download_hf_hub)
         if filename:
-            target = download_pretrained_from_hf(model_id, filename=filename, cache_dir=cache_dir)
+            target = download_pretrained_from_hf(
+                model_id, filename=filename, cache_dir=cache_dir)
         else:
             target = download_pretrained_from_hf(model_id, cache_dir=cache_dir)
 
