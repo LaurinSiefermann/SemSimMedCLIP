@@ -30,9 +30,12 @@ class CLIPVisionCfg:
     image_size: Union[Tuple[int, int], int] = 224
     ls_init_value: Optional[float] = None  # layer scale initial value
     timm_model_name: str = None  # a valid model name overrides layers, width, patch_size
-    timm_model_pretrained: bool = False  # use (imagenet) pretrained weights for named model
-    timm_pool: str = 'avg'  # feature pooling for timm model ('abs_attn', 'rot_attn', 'avg', '')
-    timm_proj: str = 'linear'  # linear projection for timm model output ('linear', 'mlp', '')
+    # use (imagenet) pretrained weights for named model
+    timm_model_pretrained: bool = False
+    # feature pooling for timm model ('abs_attn', 'rot_attn', 'avg', '')
+    timm_pool: str = 'avg'
+    # linear projection for timm model output ('linear', 'mlp', '')
+    timm_proj: str = 'linear'
     timm_proj_bias: bool = False  # enable bias final projection
 
 
@@ -64,7 +67,8 @@ def _build_vision_tower(
         embed_dim: int,
         vision_cfg: CLIPVisionCfg,
         quick_gelu: bool = False,
-        cast_dtype: Optional[torch.dtype] = None
+        cast_dtype: Optional[torch.dtype] = None,
+        grey_scale: bool = False
 ):
     if isinstance(vision_cfg, dict):
         vision_cfg = CLIPVisionCfg(**vision_cfg)
@@ -96,7 +100,8 @@ def _build_vision_tower(
         )
     else:
         vision_heads = vision_cfg.width // vision_cfg.head_width
-        norm_layer = LayerNormFp32 if cast_dtype in (torch.float16, torch.bfloat16) else LayerNorm
+        norm_layer = LayerNormFp32 if cast_dtype in (
+            torch.float16, torch.bfloat16) else LayerNorm
         visual = VisionTransformer(
             image_size=vision_cfg.image_size,
             patch_size=vision_cfg.patch_size,
@@ -108,6 +113,7 @@ def _build_vision_tower(
             output_dim=embed_dim,
             act_layer=act_layer,
             norm_layer=norm_layer,
+            grey_scale=grey_scale
         )
 
     return visual
@@ -129,10 +135,11 @@ def _build_text_tower(
             proj=text_cfg.proj,
             pooler_type=text_cfg.pooler_type,
             pretrained=text_cfg.hf_model_pretrained
-       )
+        )
     else:
         act_layer = QuickGELU if quick_gelu else nn.GELU
-        norm_layer = LayerNormFp32 if cast_dtype in (torch.float16, torch.bfloat16) else LayerNorm
+        norm_layer = LayerNormFp32 if cast_dtype in (
+            torch.float16, torch.bfloat16) else LayerNorm
 
         text = TextTransformer(
             context_length=text_cfg.context_length,
@@ -158,7 +165,8 @@ class CLIP(nn.Module):
             cast_dtype: Optional[torch.dtype] = None,
     ):
         super().__init__()
-        self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
+        self.visual = _build_vision_tower(
+            embed_dim, vision_cfg, quick_gelu, cast_dtype)
 
         text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
         self.transformer = text.transformer
@@ -173,7 +181,8 @@ class CLIP(nn.Module):
 
     def lock_image_tower(self, unlocked_groups=0, freeze_bn_stats=False):
         # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
-        self.visual.lock(unlocked_groups=unlocked_groups, freeze_bn_stats=freeze_bn_stats)
+        self.visual.lock(unlocked_groups=unlocked_groups,
+                         freeze_bn_stats=freeze_bn_stats)
 
     @torch.jit.ignore
     def set_grad_checkpointing(self, enable=True):
@@ -187,7 +196,8 @@ class CLIP(nn.Module):
     def encode_text(self, text, normalize: bool = False):
         cast_dtype = self.transformer.get_cast_dtype()
 
-        x = self.token_embedding(text).to(cast_dtype)  # [batch_size, n_ctx, d_model]
+        x = self.token_embedding(text).to(
+            cast_dtype)  # [batch_size, n_ctx, d_model]
 
         x = x + self.positional_embedding.to(cast_dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
@@ -195,13 +205,14 @@ class CLIP(nn.Module):
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.ln_final(x)  # [batch_size, n_ctx, transformer.width]
         # take features from the eot embedding (eot_token is the highest number in each sequence)
-        x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
+        x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)
+              ] @ self.text_projection
         return F.normalize(x, dim=-1) if normalize else x
 
-    def forward(self, image, text):
+    def forward(self, image, sentence):
         image_features = self.encode_image(image, normalize=True)
-        text_features = self.encode_text(text, normalize=True)
-        return image_features, text_features, self.logit_scale.exp()
+        sentence_features = self.encode_text(sentence, normalize=True)
+        return image_features, sentence_features, self.logit_scale.exp()
 
 
 class CustomTextCLIP(nn.Module):
@@ -212,16 +223,21 @@ class CustomTextCLIP(nn.Module):
             text_cfg: CLIPTextCfg,
             quick_gelu: bool = False,
             cast_dtype: Optional[torch.dtype] = None,
+            grey_scale: bool = False,
     ):
         super().__init__()
-        self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
-        self.text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
+        self.visual = _build_vision_tower(
+            embed_dim, vision_cfg, quick_gelu, cast_dtype, grey_scale)
+        self.text = _build_text_tower(
+            embed_dim, text_cfg, quick_gelu, cast_dtype)
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def lock_image_tower(self, unlocked_groups=0, freeze_bn_stats=False):
         # lock image tower as per LiT - https://arxiv.org/abs/2111.07991
-        self.visual.lock(unlocked_groups=unlocked_groups, freeze_bn_stats=freeze_bn_stats)
-    def lock_text_tower(self, unlocked_layers:int=0, freeze_layer_norm:bool=True):
+        self.visual.lock(unlocked_groups=unlocked_groups,
+                         freeze_bn_stats=freeze_bn_stats)
+
+    def lock_text_tower(self, unlocked_layers: int = 0, freeze_layer_norm: bool = True):
         self.text.lock(unlocked_layers, freeze_layer_norm)
 
     @torch.jit.ignore
@@ -237,10 +253,11 @@ class CustomTextCLIP(nn.Module):
         features = self.text(text)
         return F.normalize(features, dim=-1) if normalize else features
 
-    def forward(self, image, text):
+    def forward(self, image, sentence, report):
         image_features = self.encode_image(image, normalize=True)
-        text_features = self.encode_text(text, normalize=True)
-        return image_features, text_features, self.logit_scale.exp()
+        sentence_features = self.encode_text(sentence, normalize=True)
+        report_features = self.encode_text(report, normalize=True)
+        return image_features, sentence_features, report_features, self.logit_scale.exp()
 
 
 def convert_weights_to_lp(model: nn.Module, dtype=torch.float16):
@@ -301,16 +318,19 @@ def build_model_from_openai_state_dict(
         vision_layers = len(
             [k for k in state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
         vision_patch_size = state_dict["visual.conv1.weight"].shape[-1]
-        grid_size = round((state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
+        grid_size = round(
+            (state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
         image_size = vision_patch_size * grid_size
     else:
         counts: list = [
             len(set(k.split(".")[2] for k in state_dict if k.startswith(f"visual.layer{b}"))) for b in [1, 2, 3, 4]]
         vision_layers = tuple(counts)
         vision_width = state_dict["visual.layer1.0.conv1.weight"].shape[0]
-        output_width = round((state_dict["visual.attnpool.positional_embedding"].shape[0] - 1) ** 0.5)
+        output_width = round(
+            (state_dict["visual.attnpool.positional_embedding"].shape[0] - 1) ** 0.5)
         vision_patch_size = None
-        assert output_width ** 2 + 1 == state_dict["visual.attnpool.positional_embedding"].shape[0]
+        assert output_width ** 2 + \
+            1 == state_dict["visual.attnpool.positional_embedding"].shape[0]
         image_size = output_width * 32
 
     embed_dim = state_dict["text_projection"].shape[1]
@@ -318,7 +338,8 @@ def build_model_from_openai_state_dict(
     vocab_size = state_dict["token_embedding.weight"].shape[0]
     transformer_width = state_dict["ln_final.weight"].shape[0]
     transformer_heads = transformer_width // 64
-    transformer_layers = len(set(k.split(".")[2] for k in state_dict if k.startswith(f"transformer.resblocks")))
+    transformer_layers = len(set(
+        k.split(".")[2] for k in state_dict if k.startswith(f"transformer.resblocks")))
 
     vision_cfg = CLIPVisionCfg(
         layers=vision_layers,
@@ -344,7 +365,8 @@ def build_model_from_openai_state_dict(
     for key in ["input_resolution", "context_length", "vocab_size"]:
         state_dict.pop(key, None)
 
-    convert_weights_to_fp16(model)  # OpenAI state dicts are partially converted to float16
+    # OpenAI state dicts are partially converted to float16
+    convert_weights_to_fp16(model)
     model.load_state_dict(state_dict)
     return model.eval()
 
@@ -352,8 +374,10 @@ def build_model_from_openai_state_dict(
 def trace_model(model, batch_size=256, device=torch.device('cpu')):
     model.eval()
     image_size = model.visual.image_size
-    example_images = torch.ones((batch_size, 3, image_size, image_size), device=device)
-    example_text = torch.zeros((batch_size, model.context_length), dtype=torch.int, device=device)
+    example_images = torch.ones(
+        (batch_size, 3, image_size, image_size), device=device)
+    example_text = torch.zeros(
+        (batch_size, model.context_length), dtype=torch.int, device=device)
     model = torch.jit.trace_module(
         model,
         inputs=dict(
@@ -371,26 +395,31 @@ def resize_pos_embed(state_dict, model, interpolation: str = 'bicubic', seq_dim=
     if old_pos_embed is None or not hasattr(model.visual, 'grid_size'):
         return
     grid_size = to_2tuple(model.visual.grid_size)
-    extra_tokens = 1  # FIXME detect different token configs (ie no class token, or more)
+    # FIXME detect different token configs (ie no class token, or more)
+    extra_tokens = 1
     new_seq_len = grid_size[0] * grid_size[1] + extra_tokens
     if new_seq_len == old_pos_embed.shape[0]:
         return
 
     if extra_tokens:
-        pos_emb_tok, pos_emb_img = old_pos_embed[:extra_tokens], old_pos_embed[extra_tokens:]
+        pos_emb_tok, pos_emb_img = old_pos_embed[:
+                                                 extra_tokens], old_pos_embed[extra_tokens:]
     else:
         pos_emb_tok, pos_emb_img = None, old_pos_embed
     old_grid_size = to_2tuple(int(math.sqrt(len(pos_emb_img))))
 
-    logging.info('Resizing position embedding grid-size from %s to %s', old_grid_size, grid_size)
-    pos_emb_img = pos_emb_img.reshape(1, old_grid_size[0], old_grid_size[1], -1).permute(0, 3, 1, 2)
+    logging.info('Resizing position embedding grid-size from %s to %s',
+                 old_grid_size, grid_size)
+    pos_emb_img = pos_emb_img.reshape(
+        1, old_grid_size[0], old_grid_size[1], -1).permute(0, 3, 1, 2)
     pos_emb_img = F.interpolate(
         pos_emb_img,
         size=grid_size,
         mode=interpolation,
         align_corners=True,
     )
-    pos_emb_img = pos_emb_img.permute(0, 2, 3, 1).reshape(1, grid_size[0] * grid_size[1], -1)[0]
+    pos_emb_img = pos_emb_img.permute(0, 2, 3, 1).reshape(
+        1, grid_size[0] * grid_size[1], -1)[0]
     if pos_emb_tok is not None:
         new_pos_embed = torch.cat([pos_emb_tok, pos_emb_img], dim=0)
     else:

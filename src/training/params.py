@@ -321,6 +321,12 @@ def parse_args(args):
         type=str,
         help="Options are ['soft_clip', 'clip']"
     )
+    parser.add_argument(
+        "--grey-scale",
+        default=False,
+        action='store_true',
+        help="ViT models require grey scale images.",
+    )
 
     args = parser.parse_args(args)
 

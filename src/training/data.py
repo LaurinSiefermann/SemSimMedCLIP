@@ -59,6 +59,8 @@ class PklDataset(Dataset):
         self.base_path = "/scratch1/MIMIC/physionet.org/files/mimic-cxr-jpg/2.0.0/"
         self.images = df[img_key].tolist()
         self.sentences = df[caption_key].tolist()
+        self.report = df["REPORT"].tolist()
+        self.chexpert_report_group = df["ChexPert"].tolist()
         self.transforms = transforms
         logging.debug('Done loading data.')
 
@@ -68,18 +70,18 @@ class PklDataset(Dataset):
         return len(self.sentences)
 
     def __getitem__(self, idx):
-        # Randomly select an image path from the list of image paths for this report
         image_path = random.choice(self.images[idx])
         full_image_path = os.path.join(self.base_path, str(image_path))
         image = self.transforms(Image.open(str(full_image_path)))
 
-        # Randomly select a sentence from the list of sentences for this report
-        raw_text = random.choice(self.sentences[idx])
+        raw_sentence = random.choice(self.sentences[idx])
+        tokenized_sentence = self.tokenize([raw_sentence])[0]
 
-        # Tokenize the selected sentence for the text encoder
-        tokenized_text = self.tokenize([raw_text])[0]
+        tokenized_report = self.tokenize([self.report[idx]])[0]
 
-        return image, raw_text, tokenized_text
+        chexpert_report_group = self.chexpert_report_group[idx]
+
+        return image, raw_sentence, tokenized_sentence, tokenized_report, chexpert_report_group
 
 
 class SharedEpoch:

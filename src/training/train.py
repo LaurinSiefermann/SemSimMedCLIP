@@ -86,25 +86,30 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
         if not args.skip_scheduler:
             scheduler(step)
 
-        images, raw_texts, tokenized_texts = batch
+        images, raw_sentences, tokenized_sentences, tokenized_reports, chexpert_report_groups = batch
         images = images.to(device=device, dtype=cast_dtype, non_blocking=True)
-        tokenized_texts = tokenized_texts.to(device=device, non_blocking=True)
+        tokenized_sentences = tokenized_sentences.to(
+            device=device, non_blocking=True)
+        tokenized_reports = tokenized_reports.to(
+            device=device, non_blocking=True)
+        chexpert_report_groups = chexpert_report_groups.to(
+            device=device, non_blocking=True)
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
         # enables automatic mixed precision (AMP)
         with autocast():
             # forward pass of the model. The model is applied to the images and texts data to produce image features, text features, and the logit scale.
-            image_features, text_features, logit_scale = model(
-                images, tokenized_texts)
+            image_features, sentence_features, report_features, logit_scale = model(
+                images, tokenized_sentences, tokenized_reports)
 
             # loss function is applied to the outputs of the model to calculate the total loss.
             if args.loss_type == 'soft_clip':
-                total_loss = loss(image_features, text_features,
-                                  logit_scale, raw_texts)
+                total_loss, local_loss, local_loss_v_to_u, local_loss_u_to_v, global_loss, global_snn_loss_v_to_u, global_snn_loss_u_to_v, local_positive_pairs, global_positive_pairs = loss(image_features, sentence_features, report_features,
+                                                                                                                                                                                              raw_sentences, chexpert_report_groups, logit_scale)
             else:
-                total_loss = loss(image_features, text_features,
-                                  logit_scale)
+                total_loss, image_loss, text_loss = loss(image_features, sentence_features,
+                                                         logit_scale)
 
         if scaler is not None:
             scaler.scale(total_loss).backward()
@@ -152,7 +157,15 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
                 f"Data (t): {data_time_m.avg:.3f} "
                 f"Batch (t): {batch_time_m.avg:.3f}, {args.batch_size*args.world_size / batch_time_m.val:#g}/s "
                 f"LR: {optimizer.param_groups[0]['lr']:5f} "
-                f"Logit Scale: {logit_scale_scalar:.3f}"
+                f"Logit Scale: {logit_scale_scalar:.3f} "
+                f"Local Loss: {local_loss.item()} "
+                f"local_loss_v_to_u: {local_loss_v_to_u.item()} "
+                f"local_loss_u_to_v: {local_loss_u_to_v.item()} "
+                f"Global Loss: {global_loss.item()} "
+                f"global_snn_loss_v_to_u: {global_snn_loss_v_to_u.item()} "
+                f"global_snn_loss_u_to_v: {global_snn_loss_u_to_v.item()} "
+                f"extra_local_positive_pairs: {(local_positive_pairs.item() - args.batch_size)/2} "
+                f"extra_global_positive_pairs: {(global_positive_pairs.item() - args.batch_size)/2} "
             )
 
             # Save train loss / etc. Using non avg meter values as loggers have their own smoothing
@@ -162,7 +175,16 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
                 "batch_time": batch_time_m.val,
                 "samples_per_scond": args.batch_size*args.world_size / batch_time_m.val,
                 "scale":  logit_scale_scalar,
-                "lr": optimizer.param_groups[0]["lr"]
+                "lr": optimizer.param_groups[0]["lr"],
+                "epoch": epoch,
+                "Local Loss": local_loss.item(),
+                "local_loss_v_to_u": local_loss_v_to_u.item(),
+                "local_loss_u_to_v": local_loss_u_to_v.item(),
+                "Global Loss": global_loss.item(),
+                "global_snn_loss_v_to_u": global_snn_loss_v_to_u.item(),
+                "global_snn_loss_u_to_v": global_snn_loss_u_to_v.item(),
+                "extra_local_positive_pairs": (local_positive_pairs.item() - args.batch_size)/2,
+                "extra_global_positive_pairs": (global_positive_pairs.item() - args.batch_size)/2,
             }
             for name, val in log_data.items():
                 name = "train/" + name
@@ -170,7 +192,7 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
                     tb_writer.add_scalar(name, val, step)
                 if args.wandb:
                     assert wandb is not None, 'Please install wandb.'
-                    wandb.log({name: val, 'step': step})
+                    wandb.log({name: val, 'step': step, 'epoch': epoch})
 
             # resetting batch / data time meters per log window
             batch_time_m.reset()
@@ -184,8 +206,9 @@ def evaluate(model, data, epoch, args, tb_writer=None):
         return metrics
     device = torch.device(args.device)
     model.eval()
-
+    # TODO: Check out zero_shot_eval -> adapt to MIMIC 5x200 dataset
     zero_shot_metrics = zero_shot_eval(model, data, epoch, args)
+    # TODO: Check out metrics
     metrics.update(zero_shot_metrics)
 
     autocast = get_autocast(args.precision)
@@ -202,12 +225,14 @@ def evaluate(model, data, epoch, args, tb_writer=None):
         all_image_features, all_text_features = [], []
         with torch.no_grad():
             for i, batch in enumerate(dataloader):
+                # TODO: Adapt the return values of the dataloader
                 images, texts = batch
                 images = images.to(
                     device=device, dtype=cast_dtype, non_blocking=True)
                 texts = texts.to(device=device, non_blocking=True)
 
                 with autocast():
+                    # TODO: Adapt the return values of the model
                     image_features, text_features, logit_scale = model(
                         images, texts)
                     # features are accumulated in CPU tensors, otherwise GPU memory exhausted quickly

@@ -111,6 +111,7 @@ def create_model(
         pretrained_image: bool = False,
         pretrained_hf: bool = True,
         cache_dir: Optional[str] = None,
+        grey_scale: bool = False,
 ):
     # for callers using old naming with / in ViT names
     model_name = model_name.replace('/', '-')
@@ -153,7 +154,8 @@ def create_model(
         if custom_text:
             if 'hf_model_name' in model_cfg.get('text_cfg', {}):
                 model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf
-            model = CustomTextCLIP(**model_cfg, cast_dtype=cast_dtype)
+            model = CustomTextCLIP(
+                **model_cfg, cast_dtype=cast_dtype, grey_scale=grey_scale)
         else:
             model = CLIP(**model_cfg, cast_dtype=cast_dtype)
 
@@ -208,6 +210,7 @@ def create_model_and_transforms(
         image_mean: Optional[Tuple[float, ...]] = None,
         image_std: Optional[Tuple[float, ...]] = None,
         cache_dir: Optional[str] = None,
+        grey_scale: bool = False,
 ):
     model = create_model(
         model_name,
@@ -220,6 +223,7 @@ def create_model_and_transforms(
         pretrained_image=pretrained_image,
         pretrained_hf=pretrained_hf,
         cache_dir=cache_dir,
+        grey_scale=grey_scale,
     )
 
     image_mean = image_mean or getattr(model.visual, 'image_mean', None)
@@ -228,13 +232,15 @@ def create_model_and_transforms(
         model.visual.image_size,
         is_train=True,
         mean=image_mean,
-        std=image_std
+        std=image_std,
+        grey_scale=grey_scale,
     )
     preprocess_val = image_transform(
         model.visual.image_size,
         is_train=False,
         mean=image_mean,
-        std=image_std
+        std=image_std,
+        grey_scale=grey_scale,
     )
 
     return model, preprocess_train, preprocess_val

@@ -122,13 +122,15 @@ class ClipLoss(nn.Module):
         else:
             labels = self.labels[device]
 
-        total_loss = (
-            F.cross_entropy(logits_per_image, labels) +
-            F.cross_entropy(logits_per_text, labels)
-        ) / 2
-        return total_loss
+        # log this loss
+        image_loss = F.cross_entropy(logits_per_image, labels)
+        text_loss = F.cross_entropy(logits_per_text, labels)
 
-# TODO: Rename at the end
+        total_loss = (image_loss + text_loss) / 2
+
+        return total_loss, image_loss, text_loss
+
+# TODO: Rename later
 
 
 class ModifiedClipLoss(ClipLoss):
@@ -136,32 +138,64 @@ class ModifiedClipLoss(ClipLoss):
         super().__init__(*args, **kwargs)
         self.sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
         self.threshold = 0.7151462626262626
-        self.temperature = 0.07
 
     def compute_similarity(self, text_features):
         # Compute sBERT embeddings for each text feature
         sbert_embeddings = self.sbert_model.encode(
-            text_features, convert_to_tensor=True)
+            text_features, convert_to_tensor=True, show_progress_bar=False)
         # Compute cosine similarity between every pair of sentences
         similarity_matrix = util.pytorch_cos_sim(
             sbert_embeddings, sbert_embeddings)
         return similarity_matrix
 
-    def forward(self, image_features, text_features, logit_scale, raw_texts):
-        # Compute similarity matrix for raw text data
+    def compute_local_loss(self, image_features, text_features, raw_texts, logit_scale):
         similarity_matrix = self.compute_similarity(raw_texts)
-        # Determine positive pairs based on similarity matrix and some threshold
-        positive_pairs = (similarity_matrix > self.threshold).float()
-        # Calculate similarity between image and text features
-        logits_per_image = logit_scale * image_features @ text_features.T
-        logits_per_text = logit_scale * text_features @ image_features.T
-        # Apply temperature
-        logits_per_image /= self.temperature
-        logits_per_text /= self.temperature
-        # Compute SNN loss using positive pairs
+        positive_pairs = (
+            similarity_matrix > self.threshold).float()
+
+        local_positive_pairs = positive_pairs.sum()
+
+        logit_scale = 0.07
+        logits_per_image = (image_features @ text_features.T) / logit_scale
+        logits_per_text = (text_features @ image_features.T) / logit_scale
+
         snn_loss_v_to_u = -torch.log(torch.sum(torch.exp(logits_per_image)
                                      * positive_pairs) / torch.sum(torch.exp(logits_per_image)))
+        # Question: is the u to v loss correctly implemented? By just transposing the logits_per_text matrix?
         snn_loss_u_to_v = -torch.log(torch.sum(torch.exp(logits_per_text.T)
                                      * positive_pairs) / torch.sum(torch.exp(logits_per_text.T)))
         snn_loss = (snn_loss_v_to_u + snn_loss_u_to_v) / 2
-        return snn_loss
+
+        return snn_loss, snn_loss_v_to_u, snn_loss_u_to_v, local_positive_pairs
+
+    def compute_global_loss(self, image_features, report_features, chexpert_report_groups, logit_scale):
+        # Compute similarity matrix
+        similarity_matrix = (
+            chexpert_report_groups[:, None] == chexpert_report_groups[None, :]).float()
+        positive_pairs = similarity_matrix
+
+        global_positive_pairs = positive_pairs.sum()
+
+        logit_scale = 0.07
+        logits_per_image = (image_features @ report_features.T) / logit_scale
+        logits_per_report = (report_features @ image_features.T) / logit_scale
+
+        snn_loss_v_to_u = -torch.log(torch.sum(torch.exp(
+            logits_per_image) * positive_pairs) / torch.sum(torch.exp(logits_per_image)))
+        snn_loss_u_to_v = -torch.log(torch.sum(torch.exp(
+            logits_per_report.T) * positive_pairs) / torch.sum(torch.exp(logits_per_report.T)))
+        snn_loss = (snn_loss_v_to_u + snn_loss_u_to_v) / 2
+
+        return snn_loss, snn_loss_v_to_u, snn_loss_u_to_v, global_positive_pairs
+
+    def forward(self, image_features, sentence_features, report_features, raw_sentences, chexpert_report_groups, logit_scale):
+        # TODO: implement logit scaling -> is this usefull? Is this really the temperature parameter?
+        local_loss, local_loss_v_to_u, local_loss_u_to_v, local_positive_pairs = self.compute_local_loss(
+            image_features, sentence_features, raw_sentences, logit_scale)
+
+        global_loss, global_snn_loss_v_to_u, global_snn_loss_u_to_v, global_positive_pairs = self.compute_global_loss(
+            image_features, report_features, chexpert_report_groups, logit_scale)
+
+        total_loss = (local_loss + global_loss) / 2
+
+        return total_loss, local_loss, local_loss_v_to_u, local_loss_u_to_v, global_loss, global_snn_loss_v_to_u, global_snn_loss_u_to_v, local_positive_pairs, global_positive_pairs

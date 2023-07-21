@@ -48,6 +48,7 @@ def image_transform(
         std: Optional[Tuple[float, ...]] = None,
         resize_longest_max: bool = False,
         fill_color: int = 0,
+        grey_scale: bool = False,
 ):
     mean = mean or OPENAI_DATASET_MEAN
     if not isinstance(mean, (list, tuple)):
@@ -61,19 +62,26 @@ def image_transform(
         # for square size, pass size as int so that Resize() uses aspect preserving shortest edge
         image_size = image_size[0]
 
-    normalize = Normalize(mean=mean, std=std)
+    if grey_scale:
+        normalize = Normalize(mean=0.47171338121921097,
+                              std=0.30479147701608067)
+    else:
+        normalize = Normalize(mean=mean, std=std)
+
     if is_train:
-        return Compose([
+        transforms = [
             RandomHorizontalFlip(0.5),
             ColorJitter(0.2, 0.2),
             RandomAffine(degrees=10, scale=(0.8, 1.1),
                          translate=(0.0625, 0.0625)),
             Resize(256, interpolation=InterpolationMode.BICUBIC),
             RandomCrop((224, 224)),
-            _convert_to_rgb,
-            ToTensor(),
-            normalize,  # needs to be adapted for our data
-        ])
+        ]
+        if grey_scale:
+            transforms.extend([ToTensor(), normalize])
+        else:
+            transforms.extend([_convert_to_rgb, ToTensor(), normalize])
+        return Compose(transforms)
     else:
         if resize_longest_max:
             transforms = [
@@ -84,9 +92,8 @@ def image_transform(
                 Resize(256, interpolation=InterpolationMode.BICUBIC),
                 RandomCrop((224, 224)),
             ]
-        transforms.extend([
-            _convert_to_rgb,
-            ToTensor(),
-            normalize,
-        ])
+            if grey_scale:
+                transforms.extend([ToTensor(), normalize])
+            else:
+                transforms.extend([_convert_to_rgb, ToTensor(), normalize])
         return Compose(transforms)
