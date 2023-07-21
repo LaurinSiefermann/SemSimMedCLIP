@@ -1,0 +1,15 @@
+{
+    "embed_dim": 512,
+    "vision_cfg": {
+        "image_size": 224,
+        "layers": 12,
+        "width": 768,
+        "patch_size": 32
+    },
+    "text_cfg": {
+        "hf_model_name": "emilyalsentzer/Bio_ClinicalBERT",
+        "hf_tokenizer_name": "emilyalsentzer/Bio_ClinicalBERT",
+        "proj": "mlp",
+        "pooler_type": "mean_pooler"
+    }
+}
