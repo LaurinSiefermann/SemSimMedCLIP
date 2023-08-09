@@ -155,9 +155,8 @@ class ModifiedClipLoss(ClipLoss):
 
         local_positive_pairs = positive_pairs.sum()
 
-        logit_scale = 0.07
-        logits_per_image = (image_features @ text_features.T) / logit_scale
-        logits_per_text = (text_features @ image_features.T) / logit_scale
+        logits_per_image = (image_features @ text_features.T) * logit_scale
+        logits_per_text = (text_features @ image_features.T) * logit_scale
 
         snn_loss_v_to_u = -torch.log(torch.sum(torch.exp(logits_per_image)
                                      * positive_pairs) / torch.sum(torch.exp(logits_per_image)))
@@ -176,9 +175,8 @@ class ModifiedClipLoss(ClipLoss):
 
         global_positive_pairs = positive_pairs.sum()
 
-        logit_scale = 0.07
-        logits_per_image = (image_features @ report_features.T) / logit_scale
-        logits_per_report = (report_features @ image_features.T) / logit_scale
+        logits_per_image = (image_features @ report_features.T) * logit_scale
+        logits_per_report = (report_features @ image_features.T) * logit_scale
 
         snn_loss_v_to_u = -torch.log(torch.sum(torch.exp(
             logits_per_image) * positive_pairs) / torch.sum(torch.exp(logits_per_image)))
