@@ -74,7 +74,7 @@ def image_transform(
             ColorJitter(0.2, 0.2),
             RandomAffine(degrees=10, scale=(0.8, 1.1),
                          translate=(0.0625, 0.0625)),
-            Resize(256, interpolation=InterpolationMode.BICUBIC),
+            # Resize(256, interpolation=InterpolationMode.BICUBIC),
             RandomCrop((224, 224)),
         ]
         if grey_scale:
@@ -89,6 +89,7 @@ def image_transform(
             ]
         else:
             transforms = [
+                # > Resize is not commented out for imagenet val
                 Resize(256, interpolation=InterpolationMode.BICUBIC),
                 RandomCrop((224, 224)),
             ]
