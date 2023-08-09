@@ -154,8 +154,8 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
             logging.info(
                 f"Train Epoch: {epoch} [{num_samples:>{sample_digits}}/{samples_per_epoch} ({percent_complete:.0f}%)] "
                 f"Loss: {loss_m.val:#.5g} ({loss_m.avg:#.4g}) "
-                f"Data (t): {data_time_m.avg:.3f} "
-                f"Batch (t): {batch_time_m.avg:.3f}, {args.batch_size*args.world_size / batch_time_m.val:#g}/s "
+                f"Loading Data (t): {data_time_m.avg:.3f} "
+                f"Processing Batch (t): {batch_time_m.avg:.3f}, {args.batch_size*args.world_size / batch_time_m.val:#g}/s "
                 f"LR: {optimizer.param_groups[0]['lr']:5f} "
                 f"Logit Scale: {logit_scale_scalar:.3f} "
                 f"Local Loss: {local_loss.item()} "
@@ -201,14 +201,21 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
 
 
 def evaluate(model, data, epoch, args, tb_writer=None):
+
+    loss = ModifiedClipLoss(
+        local_loss=args.local_loss,
+        gather_with_grad=args.gather_with_grad,
+        cache_labels=False,  # don't cache labels - in our use case they have to change every time
+        rank=args.rank,
+        world_size=args.world_size,
+        use_horovod=args.horovod)
+
     metrics = {}
     if not is_master(args):
         return metrics
     device = torch.device(args.device)
     model.eval()
-    # TODO: Check out zero_shot_eval -> adapt to MIMIC 5x200 dataset
     zero_shot_metrics = zero_shot_eval(model, data, epoch, args)
-    # TODO: Check out metrics
     metrics.update(zero_shot_metrics)
 
     autocast = get_autocast(args.precision)
@@ -222,34 +229,26 @@ def evaluate(model, data, epoch, args, tb_writer=None):
         # FIXME this does not scale past small eval datasets
         # all_image_features @ all_text_features will blow up memory and compute very quickly
         cumulative_loss = 0.0
-        all_image_features, all_text_features = [], []
         with torch.no_grad():
             for i, batch in enumerate(dataloader):
-                # TODO: Adapt the return values of the dataloader
-                images, texts = batch
+                images, raw_sentences, tokenized_sentences, tokenized_reports, chexpert_report_groups = batch
                 images = images.to(
                     device=device, dtype=cast_dtype, non_blocking=True)
-                texts = texts.to(device=device, non_blocking=True)
+                tokenized_sentences = tokenized_sentences.to(
+                    device=device, non_blocking=True)
+                tokenized_reports = tokenized_reports.to(
+                    device=device, non_blocking=True)
+                chexpert_report_groups = chexpert_report_groups.to(
+                    device=device, non_blocking=True)
 
                 with autocast():
-                    # TODO: Adapt the return values of the model
-                    image_features, text_features, logit_scale = model(
-                        images, texts)
-                    # features are accumulated in CPU tensors, otherwise GPU memory exhausted quickly
-                    # however, system RAM is easily exceeded and compute time becomes problematic
-                    all_image_features.append(image_features.cpu())
-                    all_text_features.append(text_features.cpu())
-                    logit_scale = logit_scale.mean()
-                    logits_per_image = logit_scale * image_features @ text_features.t()
-                    logits_per_text = logits_per_image.t()
+                    image_features, sentence_features, report_features, logit_scale = model(
+                        images, tokenized_sentences, tokenized_reports)
 
-                    batch_size = images.shape[0]
-                    labels = torch.arange(batch_size, device=device).long()
-                    total_loss = (
-                        F.cross_entropy(logits_per_image, labels) +
-                        F.cross_entropy(logits_per_text, labels)
-                    ) / 2
+                    total_loss, local_loss, local_loss_v_to_u, local_loss_u_to_v, global_loss, global_snn_loss_v_to_u, global_snn_loss_u_to_v, local_positive_pairs, global_positive_pairs = loss(image_features, sentence_features, report_features,
+                                                                                                                                                                                                  raw_sentences, chexpert_report_groups, logit_scale)
 
+                batch_size = len(images)
                 cumulative_loss += total_loss * batch_size
                 num_samples += batch_size
                 if is_master(args) and (i % 100) == 0:
@@ -257,17 +256,12 @@ def evaluate(model, data, epoch, args, tb_writer=None):
                         f"Eval Epoch: {epoch} [{num_samples} / {samples_per_val}]\t"
                         f"Loss: {cumulative_loss / num_samples:.6f}\t")
 
-            val_metrics = get_metrics(
-                image_features=torch.cat(all_image_features),
-                text_features=torch.cat(all_text_features),
-                logit_scale=logit_scale.cpu(),
-            )
             loss = cumulative_loss / num_samples
-            metrics.update(
-                {**val_metrics, "val_loss": loss.item(), "epoch": epoch,
-                 "num_samples": num_samples}
-            )
+            metrics.update({"val_loss": loss.item(), "epoch": epoch,
+                           "num_samples": num_samples})
 
+    # TODO: Deleted the part for the metrics -> see how to include it again.
+    # -> look at notion explaination for metrics and adapt later
     if not metrics:
         return metrics
 

@@ -79,9 +79,15 @@ def parse_args(args):
         help="Path to imagenet v2 for conducting zero shot evaluation.",
     )
     parser.add_argument(
+        "--mimimc-5x200",
+        type=str,
+        default=None,
+        help="Path to mimimc-5x200 for conducting zero shot evaluation.",
+    )
+    parser.add_argument(
         "--logs",
         type=str,
-        default="./logs/",
+        default="/scratch1/lsiefermann/logs/",
         help="Where to store tensorboard logs. Use None to avoid storing logs.",
     )
     parser.add_argument(

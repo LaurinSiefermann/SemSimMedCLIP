@@ -20,6 +20,8 @@ from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, IterableD
 from torch.utils.data.distributed import DistributedSampler
 from webdataset.filters import _shuffle
 from webdataset.tariterators import base_plus_ext, url_opener, tar_file_expander, valid_sample
+from .mimic_zeroshot_data import CHEXPERT_COMPETITION_TASKS
+
 
 try:
     import horovod.torch as hvd
@@ -56,7 +58,7 @@ class PklDataset(Dataset):
         logging.debug(f'Loading pkl data from {input_filename}.')
         df = pd.read_pickle(input_filename)
 
-        self.base_path = "/scratch1/MIMIC/physionet.org/files/mimic-cxr-jpg/2.0.0/"
+        self.base_path = "/scratch1/MIMIC/physionet.org/files/mimic-cxr-jpg-resized/2.0.0/"
         self.images = df[img_key].tolist()
         self.sentences = df[caption_key].tolist()
         self.report = df["REPORT"].tolist()
@@ -72,16 +74,83 @@ class PklDataset(Dataset):
     def __getitem__(self, idx):
         image_path = random.choice(self.images[idx])
         full_image_path = os.path.join(self.base_path, str(image_path))
-        image = self.transforms(Image.open(str(full_image_path)))
+
+        # start_image_load_time = time.time()
+        image = Image.open(str(full_image_path))
+        # end_image_load_time = time.time()
+
+        # start_image_transform_time = time.time()
+        image = self.transforms(image)
+        # end_image_transform_time = time.time()
 
         raw_sentence = random.choice(self.sentences[idx])
+
+        # start_sentence_tokenize_time = time.time()
         tokenized_sentence = self.tokenize([raw_sentence])[0]
+        # end_sentence_tokenize_time = time.time()
 
+        # start_report_tokenize_time = time.time()
         tokenized_report = self.tokenize([self.report[idx]])[0]
+        # end_report_tokenize_time = time.time()
 
+        '''
+        image_load_time = end_image_load_time - start_image_load_time
+        image_transform_time = end_image_transform_time - start_image_transform_time
+        sentence_tokenize_time = end_sentence_tokenize_time - start_sentence_tokenize_time
+        report_tokenize_time = end_report_tokenize_time - start_report_tokenize_time
+
+        # Define the path to the CSV file
+        csv_path = '/home/lsiefermann/open_clip_based_thesis/timings_resized.csv'
+
+        # Check if the file doesn't exist to write the headers
+        if not os.path.exists(csv_path):
+            with open(csv_path, 'w', newline='') as file:
+                writer = csv.writer(file)
+                writer.writerow(['Image Load Time', 'Image Transform Time',
+                                'Sentence Tokenize Time', 'Report Tokenize Time'])
+
+        # Open the CSV file in append mode and write the timings
+        with open(csv_path, 'a', newline='') as file:
+            writer = csv.writer(file)
+            # Write the timings to the CSV file
+            writer.writerow([image_load_time, image_transform_time,
+                            sentence_tokenize_time, report_tokenize_time])
+        '''
         chexpert_report_group = self.chexpert_report_group[idx]
 
         return image, raw_sentence, tokenized_sentence, tokenized_report, chexpert_report_group
+
+
+class ZeroShotImageDataset(Dataset):
+    def __init__(self, input_filename, transforms, class_names, img_key):
+        logging.debug(f'Loading ZeroShotImageData from {input_filename}.')
+
+        self.df = pd.read_pickle(input_filename)
+        # from .mimic_zeroshot_data import CHEXPERT_COMPETITION_TASKS
+        self.class_names = class_names
+        self.transforms = transforms
+        self.image_base_path = "/scratch1/MIMIC/physionet.org/files/mimic-cxr-jpg-resized/2.0.0/"
+        self.image_path = self.df[img_key].tolist()
+        logging.debug('Done loading data.')
+
+    def __len__(self):
+        return len(self.image_path)
+
+    def __getitem__(self, idx):
+        image_path = random.choice(self.image_path[idx])
+        full_image_path = os.path.join(
+            self.image_base_path, str(image_path))
+
+        image = Image.open(str(full_image_path))
+        row = self.df.iloc[idx]
+
+        # TODO: Check transformations -> do I correclty transform the images?
+        image = self.transforms(image)
+
+        # Extract one-hot encoded label and convert to categorical format
+        one_hot_label = row[self.class_names].values.astype(np.float32)
+        label = torch.argmax(torch.tensor(one_hot_label))
+        return image, label
 
 
 class SharedEpoch:
@@ -559,6 +628,32 @@ def get_dataset_fn(data_path, dataset_type):
         raise ValueError(f"Unsupported dataset type: {dataset_type}")
 
 
+def get_mimic_5x200(args, preprocess_fns):
+    _, preprocess_val = preprocess_fns
+
+    # Get dataset
+    dataset = ZeroShotImageDataset(
+        args.mimimc_5x200,
+        preprocess_val,
+        CHEXPERT_COMPETITION_TASKS,
+        args.csv_img_key)
+
+    # Create dataloader
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        num_workers=args.workers,
+        sampler=None,
+    )
+
+    # TODO: Check if this results in the correct numbers
+    num_samples = len(dataset)
+    dataloader.num_samples = num_samples
+    dataloader.num_batches = len(dataloader)
+
+    return DataInfo(dataloader=dataloader, sampler=None)
+
+
 def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
     preprocess_train, preprocess_val = preprocess_fns
     data = {}
@@ -576,5 +671,8 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
 
     if args.imagenet_v2 is not None:
         data["imagenet-v2"] = get_imagenet(args, preprocess_fns, "v2")
+
+    if args.mimimc_5x200 is not None:
+        data["mimic-5x200"] = get_mimic_5x200(args, preprocess_fns)
 
     return data
