@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import random
+from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 
 from open_clip import get_cast_dtype, get_tokenizer
 from .precision import get_autocast
@@ -132,7 +133,9 @@ def run_mimic(model, classifier, dataloader, args):
     autocast = get_autocast(args.precision)
     cast_dtype = get_cast_dtype(args.precision)
 
-    total, top1_correct, top5_correct = 0, 0, 0
+    total, top1_correct, top3_correct = 0, 0, 0
+    all_preds = []
+    all_labels = []
 
     with torch.no_grad():
         for images, labels in tqdm(dataloader):
@@ -145,25 +148,43 @@ def run_mimic(model, classifier, dataloader, args):
                 # Get image embeddings from the model
                 image_embeddings = model.encode_image(images)
                 image_embeddings = F.normalize(image_embeddings, dim=-1)
-
-            # Compute logits
-            logits = 100. * image_embeddings @ classifier
+                logits = 100. * image_embeddings @ classifier
 
             # Top-1 accuracy
             _, preds = torch.max(logits, dim=1)
             top1_correct += (preds == labels).sum().item()
 
-            # Get top-5 predictions
-            _, top5_preds = torch.topk(logits, k=5, dim=1)
-            top5_correct += sum([labels[i] in top5_preds[i]
+            # Get top-3 predictions
+            _, top3_preds = torch.topk(logits, k=3, dim=1)
+            top3_correct += sum([labels[i] in top3_preds[i]
                                 for i in range(len(labels))])
 
             total += labels.size(0)
 
-    top1 = 100.0 * top1_correct / total
-    top5 = 100.0 * top5_correct / total
+            # For class-wise accuracy, confusion matrix, and precision/recall
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
 
-    return top1, top5
+    # Calculate top-1 and top-3 accuracy
+    top1 = 100.0 * top1_correct / total
+    top3 = 100.0 * top3_correct / total
+
+    # Calculate class-wise accuracy
+    class_accuracies = {}
+    targets = ["Atelectasis", "Cardiomegaly",
+               "Consolidation", "Edema", "Pleural Effusion"]
+    for idx, label in enumerate(targets):
+        class_accuracies[label] = 100.0 * sum([1 for p, l in zip(
+            all_preds, all_labels) if p == idx and l == idx]) / all_labels.count(idx)
+
+    # Calculate confusion matrix
+    conf_matrix = confusion_matrix(all_labels, all_preds)
+
+    # Calculate precision, recall, and F1-score
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        all_labels, all_preds, average='weighted')
+
+    return top1, top3, class_accuracies, conf_matrix, precision, recall, f1
 
 
 def zero_shot_eval(model, data, epoch, args):
@@ -208,9 +229,16 @@ def zero_shot_eval(model, data, epoch, args):
         logging.info('Using classifier')
         results = {}
 
-        top1, top5 = run_mimic(model, classifier,
-                               data['mimic-5x200'].dataloader, args)
+        top1, top3, class_accuracies, conf_matrix, precision, recall, f1 = run_mimic(model, classifier,
+                                                                                     data['mimic-5x200'].dataloader, args)
         results['mimic-zeroshot-top1'] = top1
-        results['mimic-zeroshot-top5'] = top5
+        results['mimic-zeroshot-top3'] = top3
+        results['mimic-zeroshot-class_accuracies'] = class_accuracies
+        results['mimic-zeroshot-conf_matrix'] = conf_matrix.tolist()
+        results['mimic-zeroshot-precision'] = precision
+        results['mimic-zeroshot-recall'] = recall
+        results['mimic-zeroshot-f1'] = f1
+
+        logging.info('Finished zero-shot mimic-5x200.')
 
     return results
