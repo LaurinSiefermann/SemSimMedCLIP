@@ -60,11 +60,12 @@ def parse_args(args):
         default="filepath",
         help="For csv-like datasets, the name of the key for the image paths."
     )
+    # options are REPORT or sentences
     parser.add_argument(
         "--csv-caption-key",
         type=str,
-        default="title",
-        help="For csv-like datasets, the name of the key for the captions."
+        default="REPORT",
+        help="For csv-like datasets, the name of the key for the captions. // also used for pkl dataset: specifies the key for the text of interest. Options are [REPORT, sentences]"
     )
     parser.add_argument(
         "--imagenet-val",
@@ -143,6 +144,8 @@ def parse_args(args):
         default=False,
         help="Always save the most recent model trained to epoch_latest.pt.",
     )
+    parser.add_argument('--save-only-best-model', action='store_true', default=True,
+                        help='Save model with the best train/validation loss.')
     parser.add_argument(
         "--zeroshot-frequency", type=int, default=2, help="How often to run zero shot."
     )
@@ -234,6 +237,12 @@ def parse_args(args):
         help="Force use of CustomTextCLIP model (separate text-tower).",
     )
     parser.add_argument(
+        "--force-text-scratch",
+        default=False,
+        action='store_true',
+        help="Force text tower to be randomly initialized (from hugging face architecture).",
+    )
+    parser.add_argument(
         "--torchscript",
         default=False,
         action='store_true',
@@ -266,6 +275,12 @@ def parse_args(args):
         default='',
         type=str,
         help="Notes if logging with wandb"
+    )
+    parser.add_argument(
+        "--save-pairings",
+        default=False,
+        action='store_true',
+        help="Save the report/sentence pairings during first epoch of training."
     )
     parser.add_argument(
         "--debug",
@@ -321,11 +336,14 @@ def parse_args(args):
         action='store_true',
         help="Freeze BatchNorm running stats in image tower for any locked layers.",
     )
+    # Previously soft_clip, now multiple text features
+    # Clip = standard implementation
+    # single text feature -> only report or sentence (depends on csv-caption-key (report or sentence))
     parser.add_argument(
         "--loss-type",
-        default='soft_clip',
+        default='multiple_features',
         type=str,
-        help="Options are ['soft_clip', 'clip']"
+        help="Options are ['single_feature', 'multiple_features', 'clip']"
     )
     parser.add_argument(
         "--grey-scale",
@@ -333,6 +351,14 @@ def parse_args(args):
         action='store_true',
         help="ViT models require grey scale images.",
     )
+    parser.add_argument('--start_weight_local', type=float, default=1.0,
+                        help='Weight for the local loss at the beginning of training. Default: 1.0')
+    parser.add_argument('--end_weight_local', type=float, default=0.7,
+                        help='Weight for the local loss after the second transition point. Default: 0.7')
+    parser.add_argument('--transition_1', type=float, default=0.1,
+                        help='Fraction of total_epochs after which the first transition in weights occurs. Default: 0.1')
+    parser.add_argument('--transition_2', type=float, default=0.5,
+                        help='Fraction of total_epochs after which the second transition in weights occurs. Default: 0.5')
 
     args = parser.parse_args(args)
 

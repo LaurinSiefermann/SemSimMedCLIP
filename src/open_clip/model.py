@@ -215,7 +215,11 @@ class CLIP(nn.Module):
         return image_features, sentence_features, self.logit_scale.exp()
 
 
-class CustomTextCLIP(nn.Module):
+class CustomTextCLIPMultipleTextFeatures(nn.Module):
+    '''
+    Model that creates two text features (sentence and report) as well as an image feature.
+    '''
+
     def __init__(
             self,
             embed_dim: int,
@@ -258,6 +262,17 @@ class CustomTextCLIP(nn.Module):
         sentence_features = self.encode_text(sentence, normalize=True)
         report_features = self.encode_text(report, normalize=True)
         return image_features, sentence_features, report_features, self.logit_scale.exp()
+
+
+class CustomTextCLIPSingleTextFeature(CustomTextCLIPMultipleTextFeatures):
+    '''
+    Model that creates a single text feature (either sentence or report) as well as an image feature.
+    '''
+
+    def forward(self, image, text):
+        image_features = self.encode_image(image, normalize=True)
+        text_features = self.encode_text(text, normalize=True)
+        return image_features, text_features, self.logit_scale.exp()
 
 
 def convert_weights_to_lp(model: nn.Module, dtype=torch.float16):

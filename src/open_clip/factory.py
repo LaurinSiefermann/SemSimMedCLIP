@@ -10,7 +10,7 @@ from typing import Optional, Tuple, Union
 import torch
 
 from .constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
-from .model import CLIP, CustomTextCLIP, convert_weights_to_lp, convert_to_custom_text_state_dict,\
+from .model import CLIP, CustomTextCLIPMultipleTextFeatures, CustomTextCLIPSingleTextFeature, convert_weights_to_lp, convert_to_custom_text_state_dict,\
     resize_pos_embed, get_cast_dtype
 from .openai import load_openai_model
 from .pretrained import is_pretrained_cfg, get_pretrained_cfg, download_pretrained, list_pretrained_tags_by_model
@@ -103,11 +103,13 @@ def load_checkpoint(model, checkpoint_path, strict=True):
 def create_model(
         model_name: str,
         pretrained: Optional[str] = None,
+        loss_type: str = 'multiple_features',
         precision: str = 'fp32',
         device: Union[str, torch.device] = 'cpu',
         jit: bool = False,
         force_quick_gelu: bool = False,
         force_custom_text: bool = False,
+        force_text_scratch: bool = False,
         pretrained_image: bool = False,
         pretrained_hf: bool = True,
         cache_dir: Optional[str] = None,
@@ -154,8 +156,14 @@ def create_model(
         if custom_text:
             if 'hf_model_name' in model_cfg.get('text_cfg', {}):
                 model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf
-            model = CustomTextCLIP(
-                **model_cfg, cast_dtype=cast_dtype, grey_scale=grey_scale)
+            if force_text_scratch:
+                model_cfg['text_cfg']['hf_model_pretrained'] = False
+            if loss_type == 'multiple_features':
+                model = CustomTextCLIPMultipleTextFeatures(
+                    **model_cfg, cast_dtype=cast_dtype, grey_scale=grey_scale)
+            if loss_type == 'single_feature':
+                model = CustomTextCLIPSingleTextFeature(
+                    **model_cfg, cast_dtype=cast_dtype, grey_scale=grey_scale)
         else:
             model = CLIP(**model_cfg, cast_dtype=cast_dtype)
 
@@ -200,11 +208,13 @@ def create_model(
 def create_model_and_transforms(
         model_name: str,
         pretrained: Optional[str] = None,
+        loss_type: str = 'multiple_features',
         precision: str = 'fp32',
         device: Union[str, torch.device] = 'cpu',
         jit: bool = False,
         force_quick_gelu: bool = False,
         force_custom_text: bool = False,
+        force_text_scratch: bool = False,
         pretrained_image: bool = False,
         pretrained_hf: bool = True,
         image_mean: Optional[Tuple[float, ...]] = None,
@@ -215,11 +225,13 @@ def create_model_and_transforms(
     model = create_model(
         model_name,
         pretrained,
+        loss_type,
         precision=precision,
         device=device,
         jit=jit,
         force_quick_gelu=force_quick_gelu,
         force_custom_text=force_custom_text,
+        force_text_scratch=force_text_scratch,
         pretrained_image=pretrained_image,
         pretrained_hf=pretrained_hf,
         cache_dir=cache_dir,

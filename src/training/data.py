@@ -53,15 +53,17 @@ class CsvDataset(Dataset):
         return images, texts
 
 
-class PklDataset(Dataset):
-    def __init__(self, input_filename, transforms, img_key, caption_key, tokenizer=None):
+class PklDatasetMultipleTextFeatures(Dataset):
+    def __init__(self, input_filename, transforms, img_key, caption_key_sentences, caption_key_reports, tokenizer=None):
         logging.debug(f'Loading pkl data from {input_filename}.')
         df = pd.read_pickle(input_filename)
 
         self.base_path = "/scratch1/MIMIC/physionet.org/files/mimic-cxr-jpg-resized/2.0.0/"
+        self.subject_id = df["subject_id"].tolist()  # Load subject_id column
+        self.study_id = df["study_id"].tolist()      # Load study_id column
         self.images = df[img_key].tolist()
-        self.sentences = df[caption_key].tolist()
-        self.report = df["REPORT"].tolist()
+        self.sentences = df[caption_key_sentences].tolist()
+        self.report = df[caption_key_reports].tolist()
         self.chexpert_report_group = df["ChexPert"].tolist()
         self.transforms = transforms
         logging.debug('Done loading data.')
@@ -75,50 +77,55 @@ class PklDataset(Dataset):
         image_path = random.choice(self.images[idx])
         full_image_path = os.path.join(self.base_path, str(image_path))
 
-        # start_image_load_time = time.time()
         image = Image.open(str(full_image_path))
-        # end_image_load_time = time.time()
-
-        # start_image_transform_time = time.time()
         image = self.transforms(image)
-        # end_image_transform_time = time.time()
 
         raw_sentence = random.choice(self.sentences[idx])
-
-        # start_sentence_tokenize_time = time.time()
         tokenized_sentence = self.tokenize([raw_sentence])[0]
-        # end_sentence_tokenize_time = time.time()
-
-        # start_report_tokenize_time = time.time()
         tokenized_report = self.tokenize([self.report[idx]])[0]
-        # end_report_tokenize_time = time.time()
 
-        '''
-        image_load_time = end_image_load_time - start_image_load_time
-        image_transform_time = end_image_transform_time - start_image_transform_time
-        sentence_tokenize_time = end_sentence_tokenize_time - start_sentence_tokenize_time
-        report_tokenize_time = end_report_tokenize_time - start_report_tokenize_time
-
-        # Define the path to the CSV file
-        csv_path = '/home/lsiefermann/open_clip_based_thesis/timings_resized.csv'
-
-        # Check if the file doesn't exist to write the headers
-        if not os.path.exists(csv_path):
-            with open(csv_path, 'w', newline='') as file:
-                writer = csv.writer(file)
-                writer.writerow(['Image Load Time', 'Image Transform Time',
-                                'Sentence Tokenize Time', 'Report Tokenize Time'])
-
-        # Open the CSV file in append mode and write the timings
-        with open(csv_path, 'a', newline='') as file:
-            writer = csv.writer(file)
-            # Write the timings to the CSV file
-            writer.writerow([image_load_time, image_transform_time,
-                            sentence_tokenize_time, report_tokenize_time])
-        '''
         chexpert_report_group = self.chexpert_report_group[idx]
 
-        return image, raw_sentence, tokenized_sentence, tokenized_report, chexpert_report_group
+        subj_id = self.subject_id[idx]
+        stud_id = self.study_id[idx]
+        instance_identifier = f"p{subj_id}_s{stud_id}"
+
+        return image, raw_sentence, tokenized_sentence, tokenized_report, chexpert_report_group, instance_identifier
+
+
+class PklDatasetSingleTextFeature(Dataset):
+    def __init__(self, input_filename, transforms, text_key, img_key, tokenizer=None):
+        logging.debug(f'Loading pkl data from {input_filename}.')
+        df = pd.read_pickle(input_filename)
+
+        self.base_path = "/scratch1/MIMIC/physionet.org/files/mimic-cxr-jpg-resized/2.0.0/"
+        self.subject_id = df["subject_id"].tolist()
+        self.study_id = df["study_id"].tolist()
+        self.images = df[img_key].tolist()
+        self.text = df[text_key].tolist()
+        self.transforms = transforms
+        logging.debug('Done loading data.')
+
+        self.tokenize = tokenizer
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        image_path = random.choice(self.images[idx])
+        full_image_path = os.path.join(self.base_path, str(image_path))
+
+        image = Image.open(str(full_image_path))
+        image = self.transforms(image)
+
+        raw_text = self.text[idx]
+        tokenized_text = self.tokenize([self.text[idx]])[0]
+
+        subj_id = self.subject_id[idx]
+        stud_id = self.study_id[idx]
+        instance_identifier = f"p{subj_id}_s{stud_id}"
+
+        return image, raw_text, tokenized_text, instance_identifier
 
 
 class ZeroShotImageDataset(Dataset):
@@ -536,12 +543,22 @@ def get_csv_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
 def get_pkl_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
     input_filename = args.train_data if is_train else args.val_data
     assert input_filename
-    dataset = PklDataset(
-        input_filename,
-        preprocess_fn,
-        img_key=args.csv_img_key,
-        caption_key=args.csv_caption_key,
-        tokenizer=tokenizer)
+
+    if args.loss_type == "single_feature":
+        dataset = PklDatasetSingleTextFeature(
+            input_filename,
+            preprocess_fn,
+            img_key=args.csv_img_key,
+            text_key=args.csv_caption_key,
+            tokenizer=tokenizer)
+    else:
+        dataset = PklDatasetMultipleTextFeatures(
+            input_filename,
+            preprocess_fn,
+            img_key=args.csv_img_key,
+            caption_key_sentences="sentences",
+            caption_key_reports="REPORT",
+            tokenizer=tokenizer)
     num_samples = len(dataset)
     sampler = DistributedSampler(
         dataset) if args.distributed and is_train else None
@@ -646,7 +663,6 @@ def get_mimic_5x200(args, preprocess_fns):
         sampler=None,
     )
 
-    # TODO: Check if this results in the correct numbers
     num_samples = len(dataset)
     dataloader.num_samples = num_samples
     dataloader.num_batches = len(dataloader)

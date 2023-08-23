@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from sentence_transformers import SentenceTransformer, util
+from collections import defaultdict
 
 try:
     import torch.distributed.nn
@@ -130,25 +131,23 @@ class ClipLoss(nn.Module):
 
         return total_loss, image_loss, text_loss
 
-# TODO: Rename later
 
-
-class ModifiedClipLoss(ClipLoss):
+class MultipleTextFeaturesClip(ClipLoss):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
         self.threshold = 0.7151462626262626
 
-    def compute_similarity(self, text_features):
+    def compute_similarity(self, raw_texts):
         # Compute sBERT embeddings for each text feature
         sbert_embeddings = self.sbert_model.encode(
-            text_features, convert_to_tensor=True, show_progress_bar=False)
+            raw_texts, convert_to_tensor=True, show_progress_bar=False)
         # Compute cosine similarity between every pair of sentences
         similarity_matrix = util.pytorch_cos_sim(
             sbert_embeddings, sbert_embeddings)
         return similarity_matrix
 
-    def compute_local_loss(self, image_features, text_features, raw_texts, logit_scale):
+    def compute_local_loss(self, image_features, text_features, raw_texts, instance_identifier, logit_scale):
         similarity_matrix = self.compute_similarity(raw_texts)
         positive_pairs = (
             similarity_matrix > self.threshold).float()
@@ -160,14 +159,19 @@ class ModifiedClipLoss(ClipLoss):
 
         snn_loss_v_to_u = -torch.log(torch.sum(torch.exp(logits_per_image)
                                      * positive_pairs) / torch.sum(torch.exp(logits_per_image)))
-        # Question: is the u to v loss correctly implemented? By just transposing the logits_per_text matrix?
         snn_loss_u_to_v = -torch.log(torch.sum(torch.exp(logits_per_text.T)
                                      * positive_pairs) / torch.sum(torch.exp(logits_per_text.T)))
         snn_loss = (snn_loss_v_to_u + snn_loss_u_to_v) / 2
 
-        return snn_loss, snn_loss_v_to_u, snn_loss_u_to_v, local_positive_pairs
+        paired_indices_local = torch.nonzero(positive_pairs).tolist()
+        paired_dict_local = defaultdict(list)
+        for i, j in paired_indices_local:
+            paired_dict_local[instance_identifier[i]].append(
+                instance_identifier[j])
 
-    def compute_global_loss(self, image_features, report_features, chexpert_report_groups, logit_scale):
+        return snn_loss, snn_loss_v_to_u, snn_loss_u_to_v, local_positive_pairs, paired_dict_local
+
+    def compute_global_loss(self, image_features, report_features, chexpert_report_groups, instance_identifier, logit_scale):
         # Compute similarity matrix
         similarity_matrix = (
             chexpert_report_groups[:, None] == chexpert_report_groups[None, :]).float()
@@ -184,16 +188,57 @@ class ModifiedClipLoss(ClipLoss):
             logits_per_report.T) * positive_pairs) / torch.sum(torch.exp(logits_per_report.T)))
         snn_loss = (snn_loss_v_to_u + snn_loss_u_to_v) / 2
 
-        return snn_loss, snn_loss_v_to_u, snn_loss_u_to_v, global_positive_pairs
+        paired_indices_global = torch.nonzero(positive_pairs).tolist()
+        paired_dict_global = defaultdict(list)
+        for i, j in paired_indices_global:
+            paired_dict_global[instance_identifier[i]].append(
+                instance_identifier[j])
 
-    def forward(self, image_features, sentence_features, report_features, raw_sentences, chexpert_report_groups, logit_scale):
-        # TODO: implement logit scaling -> is this usefull? Is this really the temperature parameter?
-        local_loss, local_loss_v_to_u, local_loss_u_to_v, local_positive_pairs = self.compute_local_loss(
-            image_features, sentence_features, raw_sentences, logit_scale)
+        return snn_loss, snn_loss_v_to_u, snn_loss_u_to_v, global_positive_pairs, paired_dict_global
 
-        global_loss, global_snn_loss_v_to_u, global_snn_loss_u_to_v, global_positive_pairs = self.compute_global_loss(
-            image_features, report_features, chexpert_report_groups, logit_scale)
+    def forward(self, image_features, sentence_features, report_features, raw_sentences, chexpert_report_groups, instance_identifier, logit_scale, lambda_local=0.5, lambda_global=0.5):
+        local_loss, local_loss_v_to_u, local_loss_u_to_v, local_positive_pairs, paired_dict_local = self.compute_local_loss(
+            image_features, sentence_features, raw_sentences, instance_identifier, logit_scale)
 
-        total_loss = (local_loss + global_loss) / 2
+        global_loss, global_snn_loss_v_to_u, global_snn_loss_u_to_v, global_positive_pairs, paired_dict_global = self.compute_global_loss(
+            image_features, report_features, chexpert_report_groups, instance_identifier, logit_scale)
 
-        return total_loss, local_loss, local_loss_v_to_u, local_loss_u_to_v, global_loss, global_snn_loss_v_to_u, global_snn_loss_u_to_v, local_positive_pairs, global_positive_pairs
+        total_loss = lambda_local * local_loss + lambda_global * global_loss
+
+        return total_loss, local_loss, local_loss_v_to_u, local_loss_u_to_v, global_loss, global_snn_loss_v_to_u, global_snn_loss_u_to_v, local_positive_pairs, global_positive_pairs, paired_dict_local, paired_dict_global
+
+
+class SingleTextFeatureClip(ClipLoss):
+    def __init__(self, sBERT, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # if sBERT == Report = all distilroberta-v1 = more tokens
+        if sBERT == "REPORT":
+            self.sbert_model = SentenceTransformer("all-distilroberta-v1")
+        else:
+            self.sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.threshold = 0.7151462626262626
+
+    def compute_similarity(self, raw_text):
+        # Compute sBERT embeddings for each text feature
+        sbert_embeddings = self.sbert_model.encode(
+            raw_text, convert_to_tensor=True, show_progress_bar=False)
+        # Compute cosine similarity between every pair of sentences
+        similarity_matrix = util.pytorch_cos_sim(
+            sbert_embeddings, sbert_embeddings)
+        return similarity_matrix
+
+    def forward(self, image_features, text_features, raw_text, logit_scale):
+        similarity_matrix = self.compute_similarity(raw_text)
+        positive_pairs = (
+            similarity_matrix > self.threshold).float()
+
+        logits_per_image = (image_features @ text_features.T) * logit_scale
+        logits_per_text = (text_features @ image_features.T) * logit_scale
+
+        snn_loss_v_to_u = -torch.log(torch.sum(torch.exp(logits_per_image)
+                                     * positive_pairs) / torch.sum(torch.exp(logits_per_image)))
+        snn_loss_u_to_v = -torch.log(torch.sum(torch.exp(logits_per_text.T)
+                                     * positive_pairs) / torch.sum(torch.exp(logits_per_text.T)))
+        loss = (snn_loss_v_to_u + snn_loss_u_to_v) / 2
+
+        return loss
