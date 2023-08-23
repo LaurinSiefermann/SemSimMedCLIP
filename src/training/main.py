@@ -16,7 +16,7 @@ import torch
 from torch import optim
 from torch.cuda.amp import GradScaler
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # import different logging tools
 try:
@@ -132,11 +132,13 @@ def main(args):
     model, preprocess_train, preprocess_val = create_model_and_transforms(
         args.model,
         args.pretrained,
+        args.loss_type,
         precision=args.precision,
         device=device,
         jit=args.torchscript,
         force_quick_gelu=args.force_quick_gelu,
         force_custom_text=args.force_custom_text,
+        force_text_scratch=args.force_text_scratch,
         pretrained_image=args.pretrained_image,
         image_mean=args.image_mean,
         image_std=args.image_std,
@@ -263,7 +265,8 @@ def main(args):
     if args.wandb and is_master(args):
         assert wandb is not None, 'Please install wandb.'
         logging.debug('Starting wandb.')
-        args.train_sz = data["train"].dataloader.num_samples
+        if args.train_data is not None:
+            args.train_sz = data["train"].dataloader.num_samples
         if args.val_data is not None:
             args.val_sz = data["val"].dataloader.num_samples
         # you will have to configure this for your project!
@@ -283,6 +286,7 @@ def main(args):
         evaluate(model, data, start_epoch, args, writer)
         return
 
+    best_val_loss = float('inf')
     for epoch in range(start_epoch, args.epochs):
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
@@ -292,7 +296,8 @@ def main(args):
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
-            evaluate(model, data, completed_epoch, args, writer)
+            metrics = evaluate(model, data, completed_epoch, args, writer)
+            current_val_loss = metrics["val_loss"]
 
         # Saving checkpoints.
         if args.save_logs:
@@ -305,20 +310,28 @@ def main(args):
             if scaler is not None:
                 checkpoint_dict["scaler"] = scaler.state_dict()
 
-            if completed_epoch == args.epochs or (
-                args.save_frequency > 0 and (
-                    completed_epoch % args.save_frequency) == 0
-            ):
-                torch.save(
-                    checkpoint_dict,
-                    os.path.join(args.checkpoint_path,
-                                 f"epoch_{completed_epoch}.pt"),
-                )
-            if args.save_most_recent:
-                torch.save(
-                    checkpoint_dict,
-                    os.path.join(args.checkpoint_path, f"epoch_latest.pt"),
-                )
+            if args.save_only_best_model:
+                if 'val' in data and current_val_loss < best_val_loss:
+                    best_val_loss = current_val_loss
+                    torch.save(
+                        checkpoint_dict,
+                        os.path.join(args.checkpoint_path, "best_model_val.pt")
+                    )
+            else:
+                if completed_epoch == args.epochs or (
+                    args.save_frequency > 0 and (
+                        completed_epoch % args.save_frequency) == 0
+                ):
+                    torch.save(
+                        checkpoint_dict,
+                        os.path.join(args.checkpoint_path,
+                                     f"epoch_{completed_epoch}.pt"),
+                    )
+                if args.save_most_recent:
+                    torch.save(
+                        checkpoint_dict,
+                        os.path.join(args.checkpoint_path, f"epoch_latest.pt"),
+                    )
 
     if args.wandb and is_master(args):
         wandb.finish()
