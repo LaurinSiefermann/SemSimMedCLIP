@@ -254,7 +254,6 @@ def parse_args(args):
         action='store_true',
         help="torch.jit.trace the model for inference / eval only",
     )
-    # arguments for distributed training
     parser.add_argument(
         "--dist-url",
         default="env://",
@@ -287,6 +286,12 @@ def parse_args(args):
         default=False,
         action="store_true",
         help="If true, more information is logged."
+    )
+    parser.add_argument(
+        "--text-similarity-model",
+        default='',
+        type=str,
+        help="Options are ['all-distilroberta-v1', 'all-MiniLM-L6-v2', 'sentence-transformers/LaBSE', 'princeton-nlp/sup-simcse-roberta-large' (simCSE)]"
     )
     parser.add_argument(
         "--copy-codebase",
@@ -329,6 +334,12 @@ def parse_args(args):
         type=int,
         default=0,
         help="Leave last n image tower layer groups unlocked.",
+    )
+    parser.add_argument(
+        "--zeroshot-num-prompts",
+        type=int,
+        default=None,
+        help="Number of prompts to use for zero shot evaluation.",
     )
     parser.add_argument(
         "--lock-text-freeze-layer-norm",

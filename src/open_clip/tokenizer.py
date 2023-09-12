@@ -200,7 +200,7 @@ class HFTokenizer:
         from transformers import AutoTokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
-    def __call__(self, texts: Union[str, List[str]], context_length: int = 512) -> torch.Tensor:
+    def __call__(self, texts: Union[str, List[str]], context_length: int = 128) -> torch.Tensor:
         # same cleaning as for default tokenizer, except lowercasing
         # adding lower (for case-sensitive tokenizers) will make it more robust but less sensitive to nuance
         if isinstance(texts, str):

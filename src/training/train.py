@@ -9,6 +9,8 @@ import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import seaborn as sns  # For a better-looking heatmap
+from sentence_transformers import util
+from collections import defaultdict
 
 try:
     import wandb
@@ -118,42 +120,58 @@ def append_to_json_file(data, file_path):
         json.dump(existing_data, f, indent=4)
 
 
-def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
+def positive_pairs_to_dict(positive_pairs, instance_identifier):
+    paired_indices = torch.nonzero(positive_pairs).tolist()
+    paired_dict = defaultdict(list)
+    for i, j in paired_indices:
+        paired_dict[instance_identifier[i]].append(instance_identifier[j])
+    return paired_dict
+
+
+def compute_text_sim_positive_pairs(text_similarity_model, raw_texts):
+    if isinstance(text_similarity_model, dict) and "tokenizer" in text_similarity_model and "model" in text_similarity_model:
+        tokenizer = text_similarity_model["tokenizer"]
+        model = text_similarity_model["model"]
+
+        inputs = tokenizer(raw_texts, padding=True, truncation=True, return_tensors="pt")
+        # Get the embeddings
+        with torch.no_grad():
+            sbert_embeddings = model(**inputs, output_hidden_states=True, return_dict=True).pooler_output
+    else:
+        # Compute sBERT embeddings for each text feature
+        sbert_embeddings = text_similarity_model.encode(raw_texts, convert_to_tensor=True, show_progress_bar=False)
+
+    threshold = 0.7151462626262626  # -> Sarah: 0.65 / run a sweep?
+    # Compute cosine similarity between every pair of sentences
+    similarity_matrix = util.pytorch_cos_sim(sbert_embeddings, sbert_embeddings)
+    positive_pairs = (similarity_matrix > threshold).float()
+    return positive_pairs
+
+
+def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_similarity_model, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
     cast_dtype = get_cast_dtype(args.precision)
 
     model.train()
 
-    if args.loss_type == 'multiple_features':
+    if args.loss_type == 'single_feature':
+        loss = SingleTextFeatureClip(local_loss=args.local_loss,
+                                     gather_with_grad=args.gather_with_grad,
+                                     cache_labels=False,  # dont cache labels - in our use case they have to change every time
+                                     rank=args.rank,
+                                     world_size=args.world_size,
+                                     use_horovod=args.horovod)
+    elif args.loss_type == 'multiple_features':
         # Compute the loss weights for the current epoch
-        lambda_local, lambda_global = get_loss_weights(
-            epoch, args.epochs, args.start_weight_local, args.end_weight_local, args.transition_1, args.transition_2)
+        lambda_local, lambda_global = get_loss_weights(epoch, args.epochs, args.start_weight_local, args.end_weight_local, args.transition_1, args.transition_2)
 
-        loss = MultipleTextFeaturesClip(
-            local_loss=args.local_loss,
-            gather_with_grad=args.gather_with_grad,
-            cache_labels=False,  # don't cache labels - in our use case they have to change every time
-            rank=args.rank,
-            world_size=args.world_size,
-            use_horovod=args.horovod)
-    elif args.loss_type == 'single_feature':
-        loss = SingleTextFeatureClip(
-            sBERT=args.csv_caption_key,
-            local_loss=args.local_loss,
-            gather_with_grad=args.gather_with_grad,
-            cache_labels=False,  # dont cache labels - in our use case they have to change every time
-            rank=args.rank,
-            world_size=args.world_size,
-            use_horovod=args.horovod)
-    else:
-        loss = ClipLoss(
-            local_loss=args.local_loss,
-            gather_with_grad=args.gather_with_grad,
-            cache_labels=False,  # dont cache labels - in our use case they have to change every time
-            rank=args.rank,
-            world_size=args.world_size,
-            use_horovod=args.horovod)
+        loss = MultipleTextFeaturesClip(local_loss=args.local_loss,
+                                        gather_with_grad=args.gather_with_grad,
+                                        cache_labels=False,  # don't cache labels - in our use case they have to change every time
+                                        rank=args.rank,
+                                        world_size=args.world_size,
+                                        use_horovod=args.horovod)
 
     # set epoch in process safe manner via sampler or shared_epoch
     data['train'].set_epoch(epoch)
@@ -164,6 +182,8 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
     loss_m = AverageMeter()
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
+    local_pairs_m = AverageMeter()
+    global_pairs_m = AverageMeter()
     end = time.time()
     for i, batch in enumerate(dataloader):
         step = num_batches_per_epoch * epoch + i
@@ -173,41 +193,46 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
 
         if args.loss_type == 'single_feature':
             images, raw_texts, tokenized_texts, instance_identifier = batch
-            tokenized_texts = tokenized_texts.to(
-                device=device, non_blocking=True)
-        else:
+
+            positive_pairs_sBERT = compute_text_sim_positive_pairs(text_similarity_model, raw_texts)
+
+            paired_dict_local = positive_pairs_to_dict(positive_pairs_sBERT, instance_identifier)
+
+            tokenized_texts = tokenized_texts.to(device=device, non_blocking=True)
+
+        elif args.loss_type == 'multiple_features':
             images, raw_sentences, tokenized_sentences, tokenized_reports, chexpert_report_groups, instance_identifier = batch
-            tokenized_sentences = tokenized_sentences.to(
-                device=device, non_blocking=True)
-            chexpert_report_groups = chexpert_report_groups.to(
-                device=device, non_blocking=True)
-            tokenized_reports = tokenized_reports.to(
-                device=device, non_blocking=True)
-        images = images.to(
-            device=device, dtype=cast_dtype, non_blocking=True)
+            positive_pairs_sBERT = compute_text_sim_positive_pairs(text_similarity_model, raw_sentences)
+            positive_pairs_chexPert = (chexpert_report_groups[:, None] == chexpert_report_groups[None, :]).float()
+
+            paired_dict_local = positive_pairs_to_dict(positive_pairs_sBERT, instance_identifier)
+            paired_dict_global = positive_pairs_to_dict(positive_pairs_chexPert, instance_identifier)
+
+            positive_pairs_chexPert = positive_pairs_chexPert.to(device=device, non_blocking=True)
+            tokenized_sentences = tokenized_sentences.to(device=device, non_blocking=True)
+            tokenized_reports = tokenized_reports.to(device=device, non_blocking=True)
+
+        positive_pairs_sBERT = positive_pairs_sBERT.to(device=device, non_blocking=True)
+        images = images.to(device=device, dtype=cast_dtype, non_blocking=True)
+
+        local_pairs_m.update(positive_pairs_sBERT.sum().item())
+        if args.loss_type == 'multiple_features':
+            global_pairs_m.update(positive_pairs_chexPert.sum().item())
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
         # enables automatic mixed precision (AMP)
         with autocast():
-            # forward pass of the model. The model is applied to the images and texts data to produce image features, text features, and the logit scale.
             if args.loss_type == 'single_feature':
-                image_features, text_features, logit_scale = model(
-                    images, tokenized_texts)
-            else:
-                image_features, sentence_features, report_features, logit_scale = model(
-                    images, tokenized_sentences, tokenized_reports)
+                image_features, text_features, logit_scale = model(images, tokenized_texts)
+            elif args.loss_type == 'multiple_features':
+                image_features, sentence_features, report_features, logit_scale = model(images, tokenized_sentences, tokenized_reports)
 
-            # loss function is applied to the outputs of the model to calculate the total loss.
-            if args.loss_type == 'multiple_features':
-                total_loss, local_loss, local_loss_v_to_u, local_loss_u_to_v, global_loss, global_snn_loss_v_to_u, global_snn_loss_u_to_v, local_positive_pairs, global_positive_pairs, paired_dict_local, paired_dict_global = loss(image_features, sentence_features, report_features,
-                                                                                                                                                                                                                                     raw_sentences, chexpert_report_groups, instance_identifier, logit_scale, lambda_local, lambda_global)
-            elif args.loss_type == 'single_feature':
-                total_loss = loss(
-                    image_features, text_features, raw_texts, logit_scale)
-            else:
-                total_loss, image_loss, text_loss = loss(image_features, sentence_features,
-                                                         logit_scale)
+            if args.loss_type == 'single_feature':
+                total_loss = loss(image_features, text_features, positive_pairs_sBERT, logit_scale)
+            elif args.loss_type == 'multiple_features':
+                total_loss, local_loss, global_loss = loss(image_features, sentence_features, report_features, positive_pairs_sBERT,
+                                                           positive_pairs_chexPert, logit_scale, lambda_local, lambda_global)
 
         if scaler is not None:
             scaler.scale(total_loss).backward()
@@ -215,22 +240,19 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
                 optimizer.synchronize()
                 scaler.unscale_(optimizer)
                 if args.grad_clip_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), args.grad_clip_norm, norm_type=2.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, norm_type=2.0)
                 with optimizer.skip_synchronize():
                     scaler.step(optimizer)
             else:
                 if args.grad_clip_norm is not None:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), args.grad_clip_norm, norm_type=2.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, norm_type=2.0)
                 scaler.step(optimizer)
             scaler.update()
         else:
             total_loss.backward()
             if args.grad_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), args.grad_clip_norm, norm_type=2.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, norm_type=2.0)
             optimizer.step()
 
         # Note: we clamp to 4.6052 = ln(100), as in the original paper.
@@ -241,41 +263,50 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
         end = time.time()
         batch_count = i + 1
 
-        # TODO: Implement logging for report_only loss
         # store positive pairings
-        if (epoch == 0 or epoch == 1) and args.save_pairings and args.loss_type == 'multiple_features':
+        if (epoch == 0 or epoch == 1) and args.save_pairings:
 
-            # Pair each instance with its corresponding raw sentence
-            instance_sentence_pairs = [{"instance": instance, "sentence": sentence}
-                                       for instance, sentence in zip(instance_identifier, raw_sentences)]
-
-            local_pairs_data = {
-                f"epoch_{epoch}_batch_{batch_count}": {
-                    "instances": instance_sentence_pairs,
-                    "paired_dict": paired_dict_local
+            # Pair each instance with its corresponding raw text/sentence
+            if args.loss_type == 'single_feature':
+                instance_text_pairs = [{"instance": instance, "text": text}
+                                       for instance, text in zip(instance_identifier, raw_texts)]
+                pairings_data = {
+                    f"epoch_{epoch}_batch_{batch_count}": {
+                        "instances": instance_text_pairs,
+                        "paired_dict": paired_dict_local
+                    }
                 }
-            }
-
-            global_pairs_data = {
-                f"epoch_{epoch}_batch_{batch_count}": {
-                    "instances": instance_identifier,
-                    "paired_dict": paired_dict_global
+            elif args.loss_type == 'multiple_features':
+                instance_sentence_pairs = [{"instance": instance, "sentence": sentence}
+                                           for instance, sentence in zip(instance_identifier, raw_sentences)]
+                pairings_data_local = {
+                    f"epoch_{epoch}_batch_{batch_count}": {
+                        "instances": instance_sentence_pairs,
+                        "paired_dict": paired_dict_local
+                    }
                 }
-            }
+                pairings_data_global = {
+                    f"epoch_{epoch}_batch_{batch_count}": {
+                        "instances": instance_identifier,
+                        "paired_dict": paired_dict_global
+                    }
+                }
 
             log_file_path = get_log_file_path(logging.getLogger())
             if log_file_path:
                 log_dir = os.path.dirname(log_file_path)
-                local_file_path = os.path.join(
-                    log_dir, f'paired_dict_local.json')
-                global_file_path = os.path.join(
-                    log_dir, f'paired_dict_global.json')
+                local_file_path = os.path.join(log_dir, f'paired_dict_local.json')
+                global_file_path = os.path.join(log_dir, f'paired_dict_global.json')
             else:
                 local_file_path = f'paired_dict_local.json'
                 global_file_path = f'paired_dict_global.json'
 
-            append_to_json_file(local_pairs_data, local_file_path)
-            append_to_json_file(global_pairs_data, global_file_path)
+            # Save to the respective files
+            if args.loss_type == 'single_feature':
+                append_to_json_file(pairings_data, local_file_path)
+            elif args.loss_type == 'multiple_features':
+                append_to_json_file(pairings_data_local, local_file_path)
+                append_to_json_file(pairings_data_global, global_file_path)
 
         if is_master(args) and (i % 100 == 0 or batch_count == num_batches_per_epoch):
             batch_size = len(images)
@@ -294,20 +325,16 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
                 f"Processing Batch (t): {batch_time_m.avg:.3f}, {args.batch_size*args.world_size / batch_time_m.val:#g}/s "
                 f"LR: {optimizer.param_groups[0]['lr']:5f} "
                 f"Logit Scale: {logit_scale_scalar:.3f} "
+                f"Local Positive Pairs: {local_pairs_m.val:.2f} "
             )
 
             if args.loss_type == 'multiple_features':
                 multiple_features_log_string = (
                     f"Local Loss: {local_loss.item()} "
-                    f"local_loss_v_to_u: {local_loss_v_to_u.item()} "
-                    f"local_loss_u_to_v: {local_loss_u_to_v.item()} "
                     f"Global Loss: {global_loss.item()} "
-                    f"global_snn_loss_v_to_u: {global_snn_loss_v_to_u.item()} "
-                    f"global_snn_loss_u_to_v: {global_snn_loss_u_to_v.item()} "
-                    f"extra_local_positive_pairs: {(local_positive_pairs.item() - args.batch_size)/2} "
-                    f"extra_global_positive_pairs: {(global_positive_pairs.item() - args.batch_size)/2} "
                     f"Lambda Local: {lambda_local:.3f} "
                     f"Lambda Global: {lambda_global:.3f}"
+                    f"Global Positive Pairs: {global_pairs_m.val:.2f} "
                 )
                 log_string += multiple_features_log_string
 
@@ -322,20 +349,16 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
                 "scale":  logit_scale_scalar,
                 "lr": optimizer.param_groups[0]["lr"],
                 "epoch": epoch,
+                "local_positive_pairs": local_pairs_m.val,
             }
 
             if args.loss_type == 'multiple_features':
                 multiple_features_log_data = {
                     "Local Loss": local_loss.item(),
-                    "local_loss_v_to_u": local_loss_v_to_u.item(),
-                    "local_loss_u_to_v": local_loss_u_to_v.item(),
                     "Global Loss": global_loss.item(),
-                    "global_snn_loss_v_to_u": global_snn_loss_v_to_u.item(),
-                    "global_snn_loss_u_to_v": global_snn_loss_u_to_v.item(),
-                    "extra_local_positive_pairs": (local_positive_pairs.item() - args.batch_size)/2,
-                    "extra_global_positive_pairs": (global_positive_pairs.item() - args.batch_size)/2,
                     "Lambda Local": lambda_local,
-                    "Lambda Global": lambda_global
+                    "Lambda Global": lambda_global,
+                    "global_positive_pairs": global_pairs_m.val,
                 }
                 log_data.update(multiple_features_log_data)
 
@@ -353,24 +376,21 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
     # end for
 
 
-def evaluate(model, data, epoch, args, tb_writer=None):
-    if args.loss_type == 'multiple_features':
-        loss = MultipleTextFeaturesClip(
-            local_loss=args.local_loss,
-            gather_with_grad=args.gather_with_grad,
-            cache_labels=False,  # don't cache labels - in our use case they have to change every time
-            rank=args.rank,
-            world_size=args.world_size,
-            use_horovod=args.horovod)
-    elif args.loss_type == 'single_feature':
-        loss = SingleTextFeatureClip(
-            sBERT=args.csv_caption_key,
-            local_loss=args.local_loss,
-            gather_with_grad=args.gather_with_grad,
-            cache_labels=False,  # dont cache labels - in our use case they have to change every time
-            rank=args.rank,
-            world_size=args.world_size,
-            use_horovod=args.horovod)
+def evaluate(model, data, epoch, text_similarity_model, args, tb_writer=None):
+    if args.loss_type == 'single_feature':
+        loss = SingleTextFeatureClip(local_loss=args.local_loss,
+                                     gather_with_grad=args.gather_with_grad,
+                                     cache_labels=False,  # dont cache labels - in our use case they have to change every time
+                                     rank=args.rank,
+                                     world_size=args.world_size,
+                                     use_horovod=args.horovod)
+    elif args.loss_type == 'multiple_features':
+        loss = MultipleTextFeaturesClip(local_loss=args.local_loss,
+                                        gather_with_grad=args.gather_with_grad,
+                                        cache_labels=False,  # don't cache labels - in our use case they have to change every time
+                                        rank=args.rank,
+                                        world_size=args.world_size,
+                                        use_horovod=args.horovod)
 
     metrics = {}
     if not is_master(args):
@@ -396,32 +416,30 @@ def evaluate(model, data, epoch, args, tb_writer=None):
 
                 if args.loss_type == 'single_feature':
                     images, raw_texts, tokenized_texts, instance_identifier = batch
-                    tokenized_texts = tokenized_texts.to(
-                        device=device, non_blocking=True)
+                    positive_pairs_sBERT = compute_text_sim_positive_pairs(text_similarity_model, raw_texts)
+                    tokenized_texts = tokenized_texts.to(device=device, non_blocking=True)
                 else:
                     images, raw_sentences, tokenized_sentences, tokenized_reports, chexpert_report_groups, instance_identifier = batch
-                    tokenized_sentences = tokenized_sentences.to(
-                        device=device, non_blocking=True)
-                    chexpert_report_groups = chexpert_report_groups.to(
-                        device=device, non_blocking=True)
-                    tokenized_reports = tokenized_reports.to(
-                        device=device, non_blocking=True)
-                images = images.to(
-                    device=device, dtype=cast_dtype, non_blocking=True)
+                    positive_pairs_sBERT = compute_text_sim_positive_pairs(text_similarity_model, raw_sentences)
+                    positive_pairs_chexPert = (chexpert_report_groups[:, None] == chexpert_report_groups[None, :]).float()
+
+                    positive_pairs_chexPert = positive_pairs_chexPert.to(device=device, non_blocking=True)
+                    tokenized_sentences = tokenized_sentences.to(device=device, non_blocking=True)
+                    tokenized_reports = tokenized_reports.to(device=device, non_blocking=True)
+                positive_pairs_sBERT = positive_pairs_sBERT.to(device=device, non_blocking=True)
+                images = images.to(device=device, dtype=cast_dtype, non_blocking=True)
 
                 with autocast():
-                    if args.loss_type == 'multiple_features':
-                        image_features, sentence_features, report_features, logit_scale = model(
-                            images, tokenized_sentences, tokenized_reports)
+                    if args.loss_type == 'single_feature':
+                        image_features, text_features, logit_scale = model(images, tokenized_texts)
+                    elif args.loss_type == 'multiple_features':
+                        image_features, sentence_features, report_features, logit_scale = model(images, tokenized_sentences, tokenized_reports)
 
-                        total_loss, local_loss, local_loss_v_to_u, local_loss_u_to_v, global_loss, global_snn_loss_v_to_u, global_snn_loss_u_to_v, local_positive_pairs, global_positive_pairs, paired_dict_local, paired_dict_global = loss(image_features, sentence_features, report_features,
-                                                                                                                                                                                                                                             raw_sentences, chexpert_report_groups, instance_identifier, logit_scale)
-                    elif args.loss_type == 'single_feature':
-                        image_features, text_features, logit_scale = model(
-                            images, tokenized_texts)
-
-                        total_loss = loss(
-                            image_features, text_features, raw_texts, logit_scale)
+                    if args.loss_type == 'single_feature':
+                        total_loss = loss(image_features, text_features, positive_pairs_sBERT, logit_scale)
+                    elif args.loss_type == 'multiple_features':
+                        total_loss, local_loss, global_loss = loss(image_features, sentence_features, report_features, positive_pairs_sBERT,
+                                                                   positive_pairs_chexPert, logit_scale)
 
                 batch_size = len(images)
                 cumulative_loss += total_loss * batch_size

@@ -66,6 +66,8 @@ def image_transform(
         normalize = Normalize(mean=0.47171338121921097,
                               std=0.30479147701608067)
     else:
+        mean = (0.47171338121921097, 0.47171338121921097, 0.47171338121921097)
+        std = (0.30479147701608067, 0.30479147701608067, 0.30479147701608067)
         normalize = Normalize(mean=mean, std=std)
 
     if is_train:

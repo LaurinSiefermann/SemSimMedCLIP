@@ -5,6 +5,8 @@ from training.logger import setup_logging
 from training.distributed import is_master, init_distributed_device, world_info_from_env
 from training.data import get_data
 from open_clip import create_model_and_transforms, trace_model, get_tokenizer
+from sentence_transformers import SentenceTransformer
+from transformers import AutoModel, AutoTokenizer
 import logging
 import os
 import sys
@@ -16,7 +18,7 @@ import torch
 from torch import optim
 from torch.cuda.amp import GradScaler
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 # import different logging tools
 try:
@@ -128,6 +130,17 @@ def main(args):
         logging.info(f'Running with a single process. Device {args.device}.')
 
     random_seed(args.seed, 0)
+
+    if args.text_similarity_model == 'princeton-nlp/sup-simcse-roberta-large':
+        text_similarity_model = {
+            "tokenizer": AutoTokenizer.from_pretrained("princeton-nlp/sup-simcse-roberta-large"),
+            "model": AutoModel.from_pretrained("princeton-nlp/sup-simcse-roberta-large")
+        }
+    else:
+        text_similarity_model = SentenceTransformer(args.text_similarity_model)
+
+    text_similarity_model.to(device)
+
     # force_custom_text -> This parameter determines whether a custom text model should be used instead of the default one.
     model, preprocess_train, preprocess_val = create_model_and_transforms(
         args.model,
@@ -283,7 +296,7 @@ def main(args):
         logging.debug('Finished loading wandb.')
 
     if 'train' not in data:
-        evaluate(model, data, start_epoch, args, writer)
+        evaluate(model, data, start_epoch, text_similarity_model, args, writer)
         return
 
     best_val_loss = float('inf')
@@ -292,11 +305,11 @@ def main(args):
             logging.info(f'Start epoch {epoch}')
 
         train_one_epoch(model, data, epoch, optimizer,
-                        scaler, scheduler, args, writer)
+                        scaler, scheduler, text_similarity_model, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
-            metrics = evaluate(model, data, completed_epoch, args, writer)
+            metrics = evaluate(model, data, completed_epoch, text_similarity_model, args, writer)
             current_val_loss = metrics["val_loss"]
 
         # Saving checkpoints.
