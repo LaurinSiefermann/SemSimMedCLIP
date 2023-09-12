@@ -9,7 +9,7 @@
     "text_cfg": {
         "hf_model_name": "bert-base-uncased",
         "hf_tokenizer_name": "bert-base-uncased",
-        "proj": "mlp",
+        "proj": "linear",
         "pooler_type": "mean_pooler"
     }
 }

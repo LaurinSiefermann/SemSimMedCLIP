@@ -1,0 +1,16 @@
+{
+    "embed_dim": 512,
+    "vision_cfg": {
+        "timm_model_name": "swin_small_patch4_window7_224",
+        "timm_model_pretrained": false,
+        "timm_pool": "",
+        "timm_proj": "linear",
+        "image_size": 224
+    },
+    "text_cfg": {
+        "hf_model_name": "emilyalsentzer/Bio_ClinicalBERT",
+        "hf_tokenizer_name": "emilyalsentzer/Bio_ClinicalBERT",
+        "proj": "linear",
+        "pooler_type": "mean_pooler"
+    }
+}
