@@ -66,7 +66,7 @@ def zero_shot_classifier_mimic(model, args):
     '''
     tokenizer = get_tokenizer(args.model)
     # create prompts for each class
-    cls_prompts = generate_class_prompts()
+    cls_prompts = generate_class_prompts(args.zeroshot_num_prompts)
 
     with torch.no_grad():
         zeroshot_weights = []

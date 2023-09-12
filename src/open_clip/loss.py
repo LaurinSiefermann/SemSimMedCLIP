@@ -146,25 +146,17 @@ class MultipleTextFeaturesClip(BaseClipLoss):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def compute_local_loss(self, image_features, text_features, positive_pairs, logit_scale):
-        snn_loss = self.compute_snn_loss(image_features, text_features, positive_pairs, logit_scale)
-        return snn_loss
-
-    def compute_global_loss(self, image_features, report_features, positive_pairs, logit_scale):
-        snn_loss = self.compute_snn_loss(image_features, report_features, positive_pairs, logit_scale)
-        return snn_loss
-
-    def forward(self, image_features, sentence_features, report_features, positive_pairs_sBERT, positive_pairs_chexPert, logit_scale, lambda_local=0.5, lambda_global=0.5):
-        local_loss = self.compute_local_loss(image_features, sentence_features, positive_pairs_sBERT, logit_scale)
-        global_loss = self.compute_global_loss(image_features, report_features, positive_pairs_chexPert, logit_scale)
-        total_loss = lambda_local * local_loss + lambda_global * global_loss
-        return total_loss, local_loss, global_loss
+    def forward(self, image_features, sentence_features, report_features, positive_pairs_report, positive_pairs_sentences, logit_scale, lambda_sentence=0.5, lambda_report=0.5):
+        report_loss = self.compute_snn_loss(image_features, report_features, positive_pairs_report, logit_scale)
+        sentence_loss = self.compute_snn_loss(image_features, sentence_features, positive_pairs_sentences, logit_scale)
+        total_loss = lambda_sentence * sentence_loss + lambda_report * report_loss
+        return total_loss, sentence_loss, report_loss
 
 
 class SingleTextFeatureClip(BaseClipLoss):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def forward(self, image_features, text_features, positive_pairs_sBERT, logit_scale):
-        loss = self.compute_snn_loss(image_features, text_features, positive_pairs_sBERT, logit_scale)
+    def forward(self, image_features, text_features, positive_pairs, logit_scale):
+        loss = self.compute_snn_loss(image_features, text_features, positive_pairs, logit_scale)
         return loss

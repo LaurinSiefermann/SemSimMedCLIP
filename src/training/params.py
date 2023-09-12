@@ -55,17 +55,24 @@ def parse_args(args):
         help="For csv-like datasets, which separator to use."
     )
     parser.add_argument(
-        "--csv-img-key",
+        "--pkl-img-key",
         type=str,
         default="filepath",
-        help="For csv-like datasets, the name of the key for the image paths."
+        help="For pkl datasets, the name of the key for the image paths."
+    )
+    parser.add_argument(
+        "--img-base-path",
+        type=str,
+        default="/scratch1/MIMIC/physionet.org/files/mimic-cxr-jpg-resized/2.0.0/",
+        # for marco: "/scratch/datasets/medical/MIMIC/"
+        help="img base path for mimic images"
     )
     # options are REPORT or sentences
     parser.add_argument(
-        "--csv-caption-key",
+        "--pkl-text-key",
         type=str,
         default="REPORT",
-        help="For csv-like datasets, the name of the key for the captions. // also used for pkl dataset: specifies the key for the text of interest. Options are [REPORT, sentences]"
+        help="For pkl datasets, the name of the key for the text of interest (Report/Sentences). Options are [REPORT, sentences]"
     )
     parser.add_argument(
         "--imagenet-val",
@@ -347,9 +354,6 @@ def parse_args(args):
         action='store_true',
         help="Freeze BatchNorm running stats in image tower for any locked layers.",
     )
-    # Previously soft_clip, now multiple text features
-    # Clip = standard implementation
-    # single text feature -> only report or sentence (depends on csv-caption-key (report or sentence))
     parser.add_argument(
         "--loss-type",
         default='multiple_features',
@@ -362,15 +366,32 @@ def parse_args(args):
         action='store_true',
         help="ViT models require grey scale images.",
     )
-    parser.add_argument('--start_weight_local', type=float, default=1.0,
+    parser.add_argument('--start_weight_sentence', type=float, default=1.0,
                         help='Weight for the local loss at the beginning of training. Default: 1.0')
-    parser.add_argument('--end_weight_local', type=float, default=0.7,
+    parser.add_argument('--end_weight_sentence', type=float, default=0.7,
                         help='Weight for the local loss after the second transition point. Default: 0.7')
     parser.add_argument('--transition_1', type=float, default=0.1,
                         help='Fraction of total_epochs after which the first transition in weights occurs. Default: 0.1')
     parser.add_argument('--transition_2', type=float, default=0.5,
                         help='Fraction of total_epochs after which the second transition in weights occurs. Default: 0.5')
-
+    parser.add_argument(
+        "--similarity-decision-1",
+        default='chexPert-labels',
+        type=str,
+        help="Specifiy method to define positive pairs for first loss level ['chexPert-labels', 'text_similarity_model']"
+    )
+    parser.add_argument(
+        "--similarity-decision-2",
+        default='text_similarity_model',
+        type=str,
+        help="Specifiy method to define positive pairs for second loss level ['chexPert-labels', 'text_similarity_model']"
+    )
+    parser.add_argument(
+        "--gpu",
+        type=int,
+        default=0,
+        help="Number of GPU to run experiment on.",
+    )
     args = parser.parse_args(args)
 
     # If some params are not passed, we use the default values based on model name.

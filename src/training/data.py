@@ -54,17 +54,18 @@ class CsvDataset(Dataset):
 
 
 class PklDatasetMultipleTextFeatures(Dataset):
-    def __init__(self, input_filename, transforms, img_key, caption_key_sentences, caption_key_reports, tokenizer=None):
+    def __init__(self, input_filename, transforms, img_key, text_key_sentences, text_key_reports, chexpert_key_sentences, chexpert_key_reports, img_base_path, tokenizer=None):
         logging.debug(f'Loading pkl data from {input_filename}.')
         df = pd.read_pickle(input_filename)
 
-        self.base_path = "/scratch1/MIMIC/physionet.org/files/mimic-cxr-jpg-resized/2.0.0/"
-        self.subject_id = df["subject_id"].tolist()  # Load subject_id column
-        self.study_id = df["study_id"].tolist()      # Load study_id column
+        self.base_path = img_base_path
+        self.subject_id = df["subject_id"].tolist()
+        self.study_id = df["study_id"].tolist()
         self.images = df[img_key].tolist()
-        self.sentences = df[caption_key_sentences].tolist()
-        self.report = df[caption_key_reports].tolist()
-        self.chexpert_report_group = df["ChexPert"].tolist()
+        self.sentences = df[text_key_sentences].tolist()
+        self.report = df[text_key_reports].tolist()
+        self.chexpert_report_group = df[chexpert_key_reports].tolist()
+        self.chexpert_sentence_group = df[chexpert_key_sentences].tolist()
         self.transforms = transforms
         logging.debug('Done loading data.')
 
@@ -79,30 +80,34 @@ class PklDatasetMultipleTextFeatures(Dataset):
 
         image = Image.open(str(full_image_path))
         image = self.transforms(image)
-
+        # TODO: pick same random sentence and associated chexpert group.
         raw_sentence = random.choice(self.sentences[idx])
         tokenized_sentence = self.tokenize([raw_sentence])[0]
+
+        raw_report = self.report[idx]
         tokenized_report = self.tokenize([self.report[idx]])[0]
 
+        chexpert_sentence_group = self.chexpert_sentence_group[idx]
         chexpert_report_group = self.chexpert_report_group[idx]
 
         subj_id = self.subject_id[idx]
         stud_id = self.study_id[idx]
         instance_identifier = f"p{subj_id}_s{stud_id}"
 
-        return image, raw_sentence, tokenized_sentence, tokenized_report, chexpert_report_group, instance_identifier
+        return image, raw_sentence, raw_report, tokenized_sentence, tokenized_report, chexpert_sentence_group, chexpert_report_group, instance_identifier
 
 
 class PklDatasetSingleTextFeature(Dataset):
-    def __init__(self, input_filename, transforms, text_key, img_key, tokenizer=None):
+    def __init__(self, input_filename, transforms, text_key, img_key, img_base_path, tokenizer=None):
         logging.debug(f'Loading pkl data from {input_filename}.')
         df = pd.read_pickle(input_filename)
 
-        self.base_path = "/scratch1/MIMIC/physionet.org/files/mimic-cxr-jpg-resized/2.0.0/"
+        self.base_path = img_base_path
         self.subject_id = df["subject_id"].tolist()
         self.study_id = df["study_id"].tolist()
         self.images = df[img_key].tolist()
         self.text = df[text_key].tolist()
+        self.chexpert_group = df["ChexPert"].tolist()
         self.transforms = transforms
         logging.debug('Done loading data.')
 
@@ -121,11 +126,13 @@ class PklDatasetSingleTextFeature(Dataset):
         raw_text = self.text[idx]
         tokenized_text = self.tokenize([self.text[idx]])[0]
 
+        chexpert_group = self.chexpert_group[idx]
+
         subj_id = self.subject_id[idx]
         stud_id = self.study_id[idx]
         instance_identifier = f"p{subj_id}_s{stud_id}"
 
-        return image, raw_text, tokenized_text, instance_identifier
+        return image, raw_text, tokenized_text, chexpert_group, instance_identifier
 
 
 class ZeroShotImageDataset(Dataset):
@@ -544,20 +551,24 @@ def get_pkl_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
     input_filename = args.train_data if is_train else args.val_data
     assert input_filename
 
-    if args.loss_type == "single_feature":
+    if args.loss_type == "single_feature" or args.loss_type == "clip":
         dataset = PklDatasetSingleTextFeature(
             input_filename,
             preprocess_fn,
-            img_key=args.csv_img_key,
-            text_key=args.csv_caption_key,
+            img_key=args.pkl_img_key,
+            text_key=args.pkl_text_key,
+            img_base_path=args.img_base_path,
             tokenizer=tokenizer)
     else:
         dataset = PklDatasetMultipleTextFeatures(
             input_filename,
             preprocess_fn,
-            img_key=args.csv_img_key,
-            caption_key_sentences="sentences",
-            caption_key_reports="REPORT",
+            img_key=args.pkl_img_key,
+            text_key_sentences="sentences",
+            text_key_reports="REPORT",
+            chexpert_key_sentences="ChexPert_Sentences",
+            chexpert_key_reports="ChexPert_Report",
+            img_base_path=args.img_base_path,
             tokenizer=tokenizer)
     num_samples = len(dataset)
     sampler = DistributedSampler(
@@ -653,7 +664,7 @@ def get_mimic_5x200(args, preprocess_fns):
         args.mimimc_5x200,
         preprocess_val,
         CHEXPERT_COMPETITION_TASKS,
-        args.csv_img_key)
+        args.pkl_img_key)
 
     # Create dataloader
     dataloader = torch.utils.data.DataLoader(

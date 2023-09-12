@@ -18,7 +18,6 @@ import torch
 from torch import optim
 from torch.cuda.amp import GradScaler
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 # import different logging tools
 try:
@@ -46,6 +45,8 @@ def random_seed(seed=42, rank=0):
 
 def main(args):
     args = parse_args(args)
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
     if torch.cuda.is_available():
         # This enables tf32 on Ampere GPUs which is only 8% slower than
@@ -285,6 +286,7 @@ def main(args):
         # you will have to configure this for your project!
         wandb.init(
             project="open-clip",
+            entity="hpi-master-thesis",
             name=args.name,
             notes=args.wandb_notes,
             tags=[],
