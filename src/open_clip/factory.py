@@ -16,6 +16,7 @@ from .openai import load_openai_model
 from .pretrained import is_pretrained_cfg, get_pretrained_cfg, download_pretrained, list_pretrained_tags_by_model
 from .transform import image_transform
 from .tokenizer import HFTokenizer, tokenize
+from medclip import MedCLIPModel, MedCLIPVisionModelViT
 
 
 _MODEL_CONFIG_PATHS = [Path(__file__).parent / f"model_configs/"]
@@ -73,9 +74,12 @@ def get_model_config(model_name):
 
 
 def get_tokenizer(model_name):
-    config = get_model_config(model_name)
-    tokenizer = HFTokenizer(config['text_cfg']['hf_tokenizer_name']
-                            ) if 'hf_tokenizer_name' in config['text_cfg'] else tokenize
+    if model_name == "medClip-cls":
+        tokenizer = HFTokenizer('emilyalsentzer/Bio_ClinicalBERT')
+    else:
+        config = get_model_config(model_name)
+        tokenizer = HFTokenizer(config['text_cfg']['hf_tokenizer_name']
+                                ) if 'hf_tokenizer_name' in config['text_cfg'] else tokenize
     return tokenizer
 
 
@@ -222,38 +226,59 @@ def create_model_and_transforms(
         cache_dir: Optional[str] = None,
         grey_scale: bool = False,
 ):
-    model = create_model(
-        model_name,
-        pretrained,
-        loss_type,
-        precision=precision,
-        device=device,
-        jit=jit,
-        force_quick_gelu=force_quick_gelu,
-        force_custom_text=force_custom_text,
-        force_text_scratch=force_text_scratch,
-        pretrained_image=pretrained_image,
-        pretrained_hf=pretrained_hf,
-        cache_dir=cache_dir,
-        grey_scale=grey_scale,
-    )
+    if model_name == 'medClip-cls':
+        model = MedCLIPModel(vision_cls=MedCLIPVisionModelViT)
+        model.from_pretrained()
 
-    image_mean = image_mean or getattr(model.visual, 'image_mean', None)
-    image_std = image_std or getattr(model.visual, 'image_std', None)
-    preprocess_train = image_transform(
-        model.visual.image_size,
-        is_train=True,
-        mean=image_mean,
-        std=image_std,
-        grey_scale=grey_scale,
-    )
-    preprocess_val = image_transform(
-        model.visual.image_size,
-        is_train=False,
-        mean=image_mean,
-        std=image_std,
-        grey_scale=grey_scale,
-    )
+        preprocess_train = image_transform(
+            (224, 224),
+            is_train=True,
+            mean=image_mean,
+            std=image_std,
+            grey_scale=grey_scale,
+        )
+        preprocess_val = image_transform(
+            (224, 224),
+            is_train=False,
+            mean=image_mean,
+            std=image_std,
+            grey_scale=grey_scale,
+        )
+        model.to(device=device)
+    else:
+        model = create_model(
+            model_name,
+            pretrained,
+            loss_type,
+            precision=precision,
+            device=device,
+            jit=jit,
+            force_quick_gelu=force_quick_gelu,
+            force_custom_text=force_custom_text,
+            force_text_scratch=force_text_scratch,
+            pretrained_image=pretrained_image,
+            pretrained_hf=pretrained_hf,
+            cache_dir=cache_dir,
+            grey_scale=grey_scale,
+        )
+
+        image_mean = image_mean or getattr(model.visual, 'image_mean', None)
+        image_std = image_std or getattr(model.visual, 'image_std', None)
+
+        preprocess_train = image_transform(
+            model.visual.image_size,
+            is_train=True,
+            mean=image_mean,
+            std=image_std,
+            grey_scale=grey_scale,
+        )
+        preprocess_val = image_transform(
+            model.visual.image_size,
+            is_train=False,
+            mean=image_mean,
+            std=image_std,
+            grey_scale=grey_scale,
+        )
 
     return model, preprocess_train, preprocess_val
 
