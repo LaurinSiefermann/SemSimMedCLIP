@@ -163,7 +163,6 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
                                      world_size=args.world_size,
                                      use_horovod=args.horovod)
     elif args.loss_type == 'multiple_features':
-        # Compute the loss weights for the current epoch ### Continue here.
         lambda_sentence, lambda_report = get_loss_weights(epoch, args.epochs, args.start_weight_sentence, args.end_weight_sentence, args.transition_1, args.transition_2)
 
         loss = MultipleTextFeaturesClip(local_loss=args.local_loss,
@@ -200,7 +199,6 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
             scheduler(step)
 
         # TODO: rename loss_type = singleSNN / multipleSNN
-        # TODO: Check if everything for calc is on the GPU
         if args.loss_type == 'single_feature':
             images, raw_texts, tokenized_texts, chexpert_groups, instance_identifier = batch
 
@@ -384,7 +382,7 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
                     f"Sentence Loss: {sentence_loss.item()} "
                     f"Report Loss: {report_loss.item()} "
                     f"Lambda Sentence: {lambda_sentence:.3f} "
-                    f"Lambda Report: {lambda_report:.3f}"
+                    f"Lambda Report: {lambda_report:.3f} "
                     f"Report Positive Pairs: {positive_pairs_1_m.val:.2f} "
                     f"Sentence Positive Pairs: {positive_pairs_2_m.val:.2f} "
                 )
@@ -489,6 +487,7 @@ def evaluate(model, data, epoch, text_similarity_model, args, tb_writer=None):
                     elif args.similarity_decision_1 == 'text_similarity_model':
                         positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_texts)
 
+                    positive_pairs_1 = positive_pairs_1.to(device=device, non_blocking=True)
                     tokenized_texts = tokenized_texts.to(device=device, non_blocking=True)
 
                 elif args.loss_type == 'multiple_features':

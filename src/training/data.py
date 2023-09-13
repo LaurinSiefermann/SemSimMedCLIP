@@ -64,8 +64,9 @@ class PklDatasetMultipleTextFeatures(Dataset):
         self.images = df[img_key].tolist()
         self.sentences = df[text_key_sentences].tolist()
         self.report = df[text_key_reports].tolist()
-        self.chexpert_report_group = df[chexpert_key_reports].tolist()
-        self.chexpert_sentence_group = df[chexpert_key_sentences].tolist()
+        # TODO: ChexPert colum needs to be adapted for future runs.
+        self.chexpert_report_group = df["ChexPert"].tolist()
+        self.chexpert_sentence_group = df["ChexPert"].tolist()
         self.transforms = transforms
         logging.debug('Done loading data.')
 

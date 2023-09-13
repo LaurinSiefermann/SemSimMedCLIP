@@ -366,10 +366,10 @@ def parse_args(args):
         action='store_true',
         help="ViT models require grey scale images.",
     )
-    parser.add_argument('--start_weight_sentence', type=float, default=1.0,
-                        help='Weight for the local loss at the beginning of training. Default: 1.0')
-    parser.add_argument('--end_weight_sentence', type=float, default=0.7,
-                        help='Weight for the local loss after the second transition point. Default: 0.7')
+    parser.add_argument('--start_weight_sentence', type=float, default=0.5,
+                        help='Weight for the local loss at the beginning of training. Default: 0.5')
+    parser.add_argument('--end_weight_sentence', type=float, default=0.5,
+                        help='Weight for the local loss after the second transition point. Default: 0.5')
     parser.add_argument('--transition_1', type=float, default=0.1,
                         help='Fraction of total_epochs after which the first transition in weights occurs. Default: 0.1')
     parser.add_argument('--transition_2', type=float, default=0.5,
