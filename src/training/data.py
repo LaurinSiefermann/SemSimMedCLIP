@@ -137,14 +137,14 @@ class PklDatasetSingleTextFeature(Dataset):
 
 
 class ZeroShotImageDataset(Dataset):
-    def __init__(self, input_filename, transforms, class_names, img_key):
+    def __init__(self, input_filename, transforms, class_names, img_key, img_base_path):
         logging.debug(f'Loading ZeroShotImageData from {input_filename}.')
 
         self.df = pd.read_pickle(input_filename)
         # from .mimic_zeroshot_data import CHEXPERT_COMPETITION_TASKS
         self.class_names = class_names
         self.transforms = transforms
-        self.image_base_path = "/scratch1/MIMIC/physionet.org/files/mimic-cxr-jpg-resized/2.0.0/"
+        self.image_base_path = img_base_path
         self.image_path = self.df[img_key].tolist()
         logging.debug('Done loading data.')
 
@@ -665,7 +665,8 @@ def get_mimic_5x200(args, preprocess_fns):
         args.mimimc_5x200,
         preprocess_val,
         CHEXPERT_COMPETITION_TASKS,
-        args.pkl_img_key)
+        args.pkl_img_key,
+        args.img_base_path)
 
     # Create dataloader
     dataloader = torch.utils.data.DataLoader(
