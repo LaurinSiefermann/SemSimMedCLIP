@@ -165,7 +165,7 @@ def create_model(
             if loss_type == 'multiple_features':
                 model = CustomTextCLIPMultipleTextFeatures(
                     **model_cfg, cast_dtype=cast_dtype, grey_scale=grey_scale)
-            if loss_type == 'single_feature':
+            if loss_type == 'single_feature' or loss_type == 'clip':
                 model = CustomTextCLIPSingleTextFeature(
                     **model_cfg, cast_dtype=cast_dtype, grey_scale=grey_scale)
         else:
