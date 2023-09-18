@@ -64,9 +64,8 @@ class PklDatasetMultipleTextFeatures(Dataset):
         self.images = df[img_key].tolist()
         self.sentences = df[text_key_sentences].tolist()
         self.report = df[text_key_reports].tolist()
-        # TODO: ChexPert colum needs to be adapted for future runs.
-        self.chexpert_report_group = df["ChexPert"].tolist()
-        self.chexpert_sentence_group = df["ChexPert"].tolist()
+        self.chexpert_report_group = df[chexpert_key_reports].tolist()
+        self.chexpert_sentence_group = df[chexpert_key_sentences].tolist()
         self.transforms = transforms
         logging.debug('Done loading data.')
 
@@ -81,14 +80,18 @@ class PklDatasetMultipleTextFeatures(Dataset):
 
         image = Image.open(str(full_image_path))
         image = self.transforms(image)
-        # TODO: pick same random sentence and associated chexpert group.
-        raw_sentence = random.choice(self.sentences[idx])
-        tokenized_sentence = self.tokenize([raw_sentence])[0]
 
+        # Pick a random index instead of a random sentence
+        random_index = random.randint(0, len(self.sentences[idx]) - 1)
+
+        # Use the random index to get the sentence and its associated chexpert group
+        raw_sentence = self.sentences[idx][random_index]
+        chexpert_sentence_group = self.chexpert_sentence_group[idx][random_index]
+
+        tokenized_sentence = self.tokenize([raw_sentence])[0]
         raw_report = self.report[idx]
         tokenized_report = self.tokenize([self.report[idx]])[0]
 
-        chexpert_sentence_group = self.chexpert_sentence_group[idx]
         chexpert_report_group = self.chexpert_report_group[idx]
 
         subj_id = self.subject_id[idx]
@@ -99,7 +102,7 @@ class PklDatasetMultipleTextFeatures(Dataset):
 
 
 class PklDatasetSingleTextFeature(Dataset):
-    def __init__(self, input_filename, transforms, text_key, img_key, img_base_path, tokenizer=None):
+    def __init__(self, input_filename, transforms, text_key, img_key, chexpert_key, img_base_path, tokenizer=None):
         logging.debug(f'Loading pkl data from {input_filename}.')
         df = pd.read_pickle(input_filename)
 
@@ -108,7 +111,7 @@ class PklDatasetSingleTextFeature(Dataset):
         self.study_id = df["study_id"].tolist()
         self.images = df[img_key].tolist()
         self.text = df[text_key].tolist()
-        self.chexpert_group = df["ChexPert"].tolist()
+        self.chexpert_group = df[chexpert_key].tolist()
         self.transforms = transforms
         logging.debug('Done loading data.')
 
@@ -552,12 +555,22 @@ def get_pkl_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
     input_filename = args.train_data if is_train else args.val_data
     assert input_filename
 
+    # Report Meta: ChexPert_report	ChexPert_sentences_list
+    # Sentences Meta: ChexPert_sentences
+
     if args.loss_type == "single_feature" or args.loss_type == "clip":
+        chexpert_key = None
+        if args.pkl_text_key == "REPORT":
+            chexpert_key = "ChexPert_report"
+        elif args.pkl_text_key == "sentences":
+            chexpert_key = "ChexPert_sentences"
+
         dataset = PklDatasetSingleTextFeature(
             input_filename,
             preprocess_fn,
             img_key=args.pkl_img_key,
             text_key=args.pkl_text_key,
+            chexpert_key=chexpert_key,
             img_base_path=args.img_base_path,
             tokenizer=tokenizer)
     else:
@@ -567,10 +580,11 @@ def get_pkl_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
             img_key=args.pkl_img_key,
             text_key_sentences="sentences",
             text_key_reports="REPORT",
-            chexpert_key_sentences="ChexPert_Sentences",
-            chexpert_key_reports="ChexPert_Report",
+            chexpert_key_sentences="ChexPert_sentences_list",
+            chexpert_key_reports="ChexPert_report",
             img_base_path=args.img_base_path,
             tokenizer=tokenizer)
+
     num_samples = len(dataset)
     sampler = DistributedSampler(
         dataset) if args.distributed and is_train else None

@@ -25,6 +25,12 @@ def parse_args(args):
         help="Path to csv file with validation data",
     )
     parser.add_argument(
+        "--exp-desc",
+        type=str,
+        default=None,
+        help="Name of experiement for wandb",
+    )
+    parser.add_argument(
         "--train-num-samples",
         type=int,
         default=None,

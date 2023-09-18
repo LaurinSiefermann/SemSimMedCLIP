@@ -224,7 +224,7 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
             # Report-level will alawys be handled on the first level
             if args.similarity_decision_1 == 'chexPert-labels':
                 positive_pairs_1 = (chexpert_report_groups[:, None] == chexpert_report_groups[None, :]).float()
-            elif args.similarity_decision_2 == 'text_similarity_model':
+            elif args.similarity_decision_1 == 'text_similarity_model':
                 positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_reports)
 
             # Sentence-level will alawys be handled secondly
@@ -496,7 +496,7 @@ def evaluate(model, data, epoch, text_similarity_model, args, tb_writer=None):
                     # Report-level will alawys be handled on the first level
                     if args.similarity_decision_1 == 'chexPert-labels':
                         positive_pairs_1 = (chexpert_report_groups[:, None] == chexpert_report_groups[None, :]).float()
-                    elif args.similarity_decision_2 == 'text_similarity_model':
+                    elif args.similarity_decision_1 == 'text_similarity_model':
                         positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_reports)
 
                     # Sentence-level will alawys be handled secondly

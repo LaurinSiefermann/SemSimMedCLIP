@@ -64,6 +64,7 @@ def main(args):
     # get the name of the experiments
     if args.name is None:
         args.name = '-'.join([
+            f"{args.exp_desc}",
             datetime.now().strftime("%Y_%m_%d-%H_%M_%S"),
             f"model_{args.model}",
             f"lr_{args.lr}",
@@ -141,7 +142,6 @@ def main(args):
         text_similarity_model = SentenceTransformer(args.text_similarity_model)
 
     text_similarity_model.to(device)
-
     # force_custom_text -> This parameter determines whether a custom text model should be used instead of the default one.
     model, preprocess_train, preprocess_val = create_model_and_transforms(
         args.model,
