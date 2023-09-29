@@ -130,16 +130,32 @@ class ClipLoss(nn.Module):
         return total_loss, image_loss, text_loss
 
 
+class multiClipLoss(ClipLoss):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
 class BaseClipLoss(ClipLoss):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def compute_snn_loss(self, image_features, text_features, positive_pairs, logit_scale):
         logits_per_image = (image_features @ text_features.T) * logit_scale
-        logits_per_text = (text_features @ image_features.T) * logit_scale
+        logits_per_text = logits_per_image.T
+        '''
+        not final version: Just for testing. 
         snn_loss_v_to_u = -torch.log(torch.sum(torch.exp(logits_per_image) * positive_pairs) / torch.sum(torch.exp(logits_per_image)))
         snn_loss_u_to_v = -torch.log(torch.sum(torch.exp(logits_per_text.T) * positive_pairs) / torch.sum(torch.exp(logits_per_text.T)))
-        return (snn_loss_v_to_u + snn_loss_u_to_v) / 2
+        '''
+        # Compute Binary Cross-Entropy loss for images:
+        image_loss = F.binary_cross_entropy_with_logits(logits_per_image, positive_pairs)
+
+        # Compute Binary Cross-Entropy loss for texts:
+        text_loss = F.binary_cross_entropy_with_logits(logits_per_text, positive_pairs)
+
+        total_loss = (image_loss + text_loss) / 2
+
+        return total_loss
 
 
 class MultipleTextFeaturesClip(BaseClipLoss):
