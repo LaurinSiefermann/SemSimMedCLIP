@@ -128,7 +128,7 @@ def positive_pairs_to_dict(positive_pairs, instance_identifier):
     return paired_dict
 
 
-def compute_text_sim_positive_pairs(text_similarity_model, raw_texts):
+def compute_text_sim_positive_pairs(text_similarity_model, raw_texts, threshold):
     if isinstance(text_similarity_model, dict) and "tokenizer" in text_similarity_model and "model" in text_similarity_model:
         tokenizer = text_similarity_model["tokenizer"]
         model = text_similarity_model["model"]
@@ -141,7 +141,7 @@ def compute_text_sim_positive_pairs(text_similarity_model, raw_texts):
         # Compute sBERT embeddings for each text feature
         sbert_embeddings = text_similarity_model.encode(raw_texts, convert_to_tensor=True, show_progress_bar=False)
 
-    threshold = 0.7151462626262626  # -> Sarah: 0.65 / run a sweep?
+    # threshold = 0.7151462626262626  # -> Sarah: 0.65 / run a sweep?
     # Compute cosine similarity between every pair of sentences
     similarity_matrix = util.pytorch_cos_sim(sbert_embeddings, sbert_embeddings)
     positive_pairs = (similarity_matrix > threshold).float()
@@ -207,7 +207,7 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
                 positive_pairs_1 = (chexpert_groups[:, None] == chexpert_groups[None, :]).float()
 
             elif args.similarity_decision_1 == 'text_similarity_model':
-                positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_texts)
+                positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_texts, args.threshold)
 
             # prep log positive pairs
             paired_dict_1 = positive_pairs_to_dict(positive_pairs_1, instance_identifier)
@@ -225,13 +225,13 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
             if args.similarity_decision_1 == 'chexPert-labels':
                 positive_pairs_1 = (chexpert_report_groups[:, None] == chexpert_report_groups[None, :]).float()
             elif args.similarity_decision_1 == 'text_similarity_model':
-                positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_reports)
+                positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_reports, args.threshold)
 
             # Sentence-level will alawys be handled secondly
             if args.similarity_decision_2 == 'chexPert-labels':
                 positive_pairs_2 = (chexpert_sentence_groups[:, None] == chexpert_sentence_groups[None, :]).float()
             elif args.similarity_decision_2 == 'text_similarity_model':
-                positive_pairs_2 = compute_text_sim_positive_pairs(text_similarity_model, raw_sentences)
+                positive_pairs_2 = compute_text_sim_positive_pairs(text_similarity_model, raw_sentences, args.threshold)
 
             # prep log positive pairs
             paired_dict_1 = positive_pairs_to_dict(positive_pairs_1, instance_identifier)
@@ -485,7 +485,7 @@ def evaluate(model, data, epoch, text_similarity_model, args, tb_writer=None):
                         positive_pairs_1 = (chexpert_groups[:, None] == chexpert_groups[None, :]).float()
 
                     elif args.similarity_decision_1 == 'text_similarity_model':
-                        positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_texts)
+                        positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_texts, args.threshold)
 
                     positive_pairs_1 = positive_pairs_1.to(device=device, non_blocking=True)
                     tokenized_texts = tokenized_texts.to(device=device, non_blocking=True)
@@ -497,13 +497,13 @@ def evaluate(model, data, epoch, text_similarity_model, args, tb_writer=None):
                     if args.similarity_decision_1 == 'chexPert-labels':
                         positive_pairs_1 = (chexpert_report_groups[:, None] == chexpert_report_groups[None, :]).float()
                     elif args.similarity_decision_1 == 'text_similarity_model':
-                        positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_reports)
+                        positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_reports, args.threshold)
 
                     # Sentence-level will alawys be handled secondly
                     if args.similarity_decision_2 == 'chexPert-labels':
                         positive_pairs_2 = (chexpert_sentence_groups[:, None] == chexpert_sentence_groups[None, :]).float()
                     elif args.similarity_decision_2 == 'text_similarity_model':
-                        positive_pairs_2 = compute_text_sim_positive_pairs(text_similarity_model, raw_sentences)
+                        positive_pairs_2 = compute_text_sim_positive_pairs(text_similarity_model, raw_sentences, args.threshold)
 
                     # put positive pairs on GPU
                     positive_pairs_1 = positive_pairs_1.to(device=device, non_blocking=True)

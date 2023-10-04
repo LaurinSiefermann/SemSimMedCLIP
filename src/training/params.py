@@ -307,6 +307,12 @@ def parse_args(args):
         help="Options are ['all-distilroberta-v1', 'all-MiniLM-L6-v2', 'sentence-transformers/LaBSE', 'princeton-nlp/sup-simcse-roberta-large' (simCSE)]"
     )
     parser.add_argument(
+        "--threshold",
+        default=0.7151462626262626,
+        type=float,
+        help="Threshold for positive pair definition for text similarity model."
+    )
+    parser.add_argument(
         "--copy-codebase",
         default=False,
         action="store_true",
