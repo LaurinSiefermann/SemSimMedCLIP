@@ -155,7 +155,12 @@ class ZeroShotImageDataset(Dataset):
         return len(self.image_path)
 
     def __getitem__(self, idx):
-        image_path = random.choice(self.image_path[idx])
+        # Check if self.image_path[idx] is a list
+        if isinstance(self.image_path[idx], list):
+            image_path = random.choice(self.image_path[idx])
+        else:
+            image_path = self.image_path[idx]
+
         full_image_path = os.path.join(
             self.image_base_path, str(image_path))
 
@@ -671,16 +676,24 @@ def get_dataset_fn(data_path, dataset_type):
         raise ValueError(f"Unsupported dataset type: {dataset_type}")
 
 
-def get_mimic_5x200(args, preprocess_fns):
+def get_5x200(args, input_filename, preprocess_fns):
     _, preprocess_val = preprocess_fns
+
+    if input_filename == "mimic":
+        input_filename = args.mimimc_5x200
+        image_base_path = args.img_base_path
+    elif input_filename == "chexpert":
+        input_filename = args.chexpert_5x200
+        image_base_path = "/scratch/datasets/medical/Chexpert/"
+        # my path: "/scratch1/CheXpert/chexpertchestxrays-u20210408/Chexpert-resized/"
 
     # Get dataset
     dataset = ZeroShotImageDataset(
-        args.mimimc_5x200,
+        input_filename,
         preprocess_val,
         CHEXPERT_COMPETITION_TASKS,
         args.pkl_img_key,
-        args.img_base_path)
+        image_base_path)
 
     # Create dataloader
     dataloader = torch.utils.data.DataLoader(
@@ -716,6 +729,9 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
         data["imagenet-v2"] = get_imagenet(args, preprocess_fns, "v2")
 
     if args.mimimc_5x200 is not None:
-        data["mimic-5x200"] = get_mimic_5x200(args, preprocess_fns)
+        data["mimic-5x200"] = get_5x200(args, "mimic", preprocess_fns)
+
+    if args.chexpert_5x200 is not None:
+        data["chexpert-5x200"] = get_5x200(args, "chexpert", preprocess_fns)
 
     return data
