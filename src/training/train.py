@@ -128,7 +128,8 @@ def positive_pairs_to_dict(positive_pairs, instance_identifier):
     return paired_dict
 
 
-def compute_text_sim_positive_pairs(text_similarity_model, raw_texts, threshold):
+def compute_text_sim_positive_pairs(text_similarity_model, raw_texts, threshold, top_k=None):
+    # (1) compute embeddings
     if isinstance(text_similarity_model, dict) and "tokenizer" in text_similarity_model and "model" in text_similarity_model:
         tokenizer = text_similarity_model["tokenizer"]
         model = text_similarity_model["model"]
@@ -141,11 +142,26 @@ def compute_text_sim_positive_pairs(text_similarity_model, raw_texts, threshold)
         # Compute sBERT embeddings for each text feature
         sbert_embeddings = text_similarity_model.encode(raw_texts, convert_to_tensor=True, show_progress_bar=False)
 
-    # threshold = 0.7151462626262626  # -> Sarah: 0.65 / run a sweep?
     # Compute cosine similarity between every pair of sentences
     similarity_matrix = util.pytorch_cos_sim(sbert_embeddings, sbert_embeddings)
     positive_pairs = (similarity_matrix > threshold).float()
-    return positive_pairs
+
+    # Count positive pairs per row
+    positive_pairs_count = positive_pairs.sum(dim=1)
+
+    if top_k is not None:
+        # Apply Top-K filtering
+        top_k_values, top_k_indices = torch.topk(similarity_matrix, k=top_k, dim=1)
+
+        # Create a mask for values above the threshold
+        top_k_mask = top_k_values > threshold
+
+        # Use the mask to filter indices and set the values in positive_pairs matrix
+        for i, (indices, mask) in enumerate(zip(top_k_indices, top_k_mask)):
+            positive_pairs[i, :] = 0  # Reset the row
+            positive_pairs[i, indices[mask]] = 1  # Set top-k pairs
+
+    return positive_pairs, positive_pairs_count
 
 
 def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_similarity_model, args, tb_writer=None):
@@ -198,7 +214,6 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
         if not args.skip_scheduler:
             scheduler(step)
 
-        # TODO: rename loss_type = singleSNN / multipleSNN
         if args.loss_type == 'single_feature':
             images, raw_texts, tokenized_texts, chexpert_groups, instance_identifier = batch
 
@@ -207,7 +222,7 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
                 positive_pairs_1 = (chexpert_groups[:, None] == chexpert_groups[None, :]).float()
 
             elif args.similarity_decision_1 == 'text_similarity_model':
-                positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_texts, args.threshold)
+                positive_pairs_1, positive_pairs_count = compute_text_sim_positive_pairs(text_similarity_model, raw_texts, args.threshold, args.top_k)
 
             # prep log positive pairs
             paired_dict_1 = positive_pairs_to_dict(positive_pairs_1, instance_identifier)
@@ -225,13 +240,13 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
             if args.similarity_decision_1 == 'chexPert-labels':
                 positive_pairs_1 = (chexpert_report_groups[:, None] == chexpert_report_groups[None, :]).float()
             elif args.similarity_decision_1 == 'text_similarity_model':
-                positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_reports, args.threshold)
+                positive_pairs_1, positive_pairs_count = compute_text_sim_positive_pairs(text_similarity_model, raw_reports, args.threshold, args.top_k)
 
             # Sentence-level will alawys be handled secondly
             if args.similarity_decision_2 == 'chexPert-labels':
                 positive_pairs_2 = (chexpert_sentence_groups[:, None] == chexpert_sentence_groups[None, :]).float()
             elif args.similarity_decision_2 == 'text_similarity_model':
-                positive_pairs_2 = compute_text_sim_positive_pairs(text_similarity_model, raw_sentences, args.threshold)
+                positive_pairs_2, positive_pairs_count = compute_text_sim_positive_pairs(text_similarity_model, raw_sentences, args.threshold, args.top_k)
 
             # prep log positive pairs
             paired_dict_1 = positive_pairs_to_dict(positive_pairs_1, instance_identifier)
@@ -371,9 +386,18 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
                 f"Logit Scale: {logit_scale_scalar:.3f} "
             )
 
+            # Function to format the tensor for logging
+            def format_tensor_for_logging(tensor):
+                return ', '.join(f"{x:.2f}" for x in tensor.tolist())
+
+            # Format the positive_pairs_count tensor
+            formatted_positive_pairs_count = format_tensor_for_logging(positive_pairs_count)
+
             if args.loss_type == 'single_feature':
                 single_feature_log_string = (
                     f"Positive Pairs: {positive_pairs_1_m.val:.2f} "
+                    f"Average positive_pairs_count: {positive_pairs_count.mean().item():.2f} "
+                    f"positive_pairs_count per row: [{formatted_positive_pairs_count}]"
                 )
                 log_string += single_feature_log_string
 
@@ -401,9 +425,10 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
                 "epoch": epoch,
             }
 
-            if args.loss_type == 'single_features':
+            if args.loss_type == 'single_feature':
                 single_features_log_data = {
                     "positive_pairs": positive_pairs_1_m.val,
+                    "positive_pairs_count (single matrix)": positive_pairs_count.mean().item(),
                 }
                 log_data.update(single_features_log_data)
 
@@ -485,7 +510,7 @@ def evaluate(model, data, epoch, text_similarity_model, args, tb_writer=None):
                         positive_pairs_1 = (chexpert_groups[:, None] == chexpert_groups[None, :]).float()
 
                     elif args.similarity_decision_1 == 'text_similarity_model':
-                        positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_texts, args.threshold)
+                        positive_pairs_1, positive_pairs_count = compute_text_sim_positive_pairs(text_similarity_model, raw_texts, args.threshold, args.top_k)
 
                     positive_pairs_1 = positive_pairs_1.to(device=device, non_blocking=True)
                     tokenized_texts = tokenized_texts.to(device=device, non_blocking=True)
@@ -497,13 +522,13 @@ def evaluate(model, data, epoch, text_similarity_model, args, tb_writer=None):
                     if args.similarity_decision_1 == 'chexPert-labels':
                         positive_pairs_1 = (chexpert_report_groups[:, None] == chexpert_report_groups[None, :]).float()
                     elif args.similarity_decision_1 == 'text_similarity_model':
-                        positive_pairs_1 = compute_text_sim_positive_pairs(text_similarity_model, raw_reports, args.threshold)
+                        positive_pairs_1, positive_pairs_count = compute_text_sim_positive_pairs(text_similarity_model, raw_reports, args.threshold, args.top_k)
 
                     # Sentence-level will alawys be handled secondly
                     if args.similarity_decision_2 == 'chexPert-labels':
                         positive_pairs_2 = (chexpert_sentence_groups[:, None] == chexpert_sentence_groups[None, :]).float()
                     elif args.similarity_decision_2 == 'text_similarity_model':
-                        positive_pairs_2 = compute_text_sim_positive_pairs(text_similarity_model, raw_sentences, args.threshold)
+                        positive_pairs_2, positive_pairs_count = compute_text_sim_positive_pairs(text_similarity_model, raw_sentences, args.threshold, top_k=args.top_k)
 
                     # put positive pairs on GPU
                     positive_pairs_1 = positive_pairs_1.to(device=device, non_blocking=True)
@@ -582,16 +607,16 @@ def evaluate(model, data, epoch, text_similarity_model, args, tb_writer=None):
         assert wandb is not None, 'Please install wandb.'
 
         # add if staetement for mimic zeroshot metrics
-        if epoch % args.zeroshot_frequency == 0:
+        if epoch % args.zeroshot_frequency == 0 and args.mimimc_5x200 != None:
             # Logging class accuracies as a bar chart
             plt.figure(figsize=(10, 6))
             plt.bar(targets, [metrics['mimic-zeroshot-class_accuracies'][t]
                     for t in targets])
             plt.xlabel('Classes')
             plt.ylabel('Accuracy')
-            plt.title('Class-wise Accuracies')
+            plt.title('Mimic: Class-wise Accuracies')
             plt.tight_layout()
-            wandb.log({"Class Accuracies": [wandb.Image(plt)], 'step': epoch})
+            wandb.log({"Mimic Class Accuracies": [wandb.Image(plt)], 'step': epoch})
 
             # Logging the confusion matrix as a heatmap
             plt.figure(figsize=(10, 6))
@@ -599,13 +624,34 @@ def evaluate(model, data, epoch, text_similarity_model, args, tb_writer=None):
                         fmt='d', cmap='Blues', xticklabels=targets, yticklabels=targets)
             plt.xlabel('Predicted')
             plt.ylabel('True')
-            plt.title('Confusion Matrix')
-            wandb.log({"Confusion Matrix": [wandb.Image(plt)], 'step': epoch})
+            plt.title('Mimic: Confusion Matrix')
+            wandb.log({"Mimic Confusion Matrix": [wandb.Image(plt)], 'step': epoch})
+
+        # add if staetement for mimic zeroshot metrics
+        if epoch % args.zeroshot_frequency == 0 and args.chexpert_5x200 != None:
+            # Chexpert: Logging class accuracies
+            plt.figure(figsize=(10, 6))
+            plt.bar(targets, [metrics['chexpert-zeroshot-class_accuracies'][t]
+                    for t in targets])
+            plt.xlabel('Classes')
+            plt.ylabel('Accuracy')
+            plt.title('Chexpert: Class-wise Accuracies')
+            plt.tight_layout()
+            wandb.log({"Chexpert Class Accuracies": [wandb.Image(plt)], 'step': epoch})
+
+            # Chexpert: Logging the confusion matrix
+            plt.figure(figsize=(10, 6))
+            sns.heatmap(metrics['chexpert-zeroshot-conf_matrix'], annot=True,
+                        fmt='d', cmap='Blues', xticklabels=targets, yticklabels=targets)
+            plt.xlabel('Predicted')
+            plt.ylabel('True')
+            plt.title('Chexpert: Confusion Matrix')
+            wandb.log({"Chexpert Confusion Matrix": [wandb.Image(plt)], 'step': epoch})
 
         # Logging other metrics
         for name, val in metrics.items():
             # Skip logging these since we're handling them separately
-            if name not in ['mimic-zeroshot-class_accuracies', 'mimic-zeroshot-conf_matrix']:
+            if name not in ['mimic-zeroshot-class_accuracies', 'mimic-zeroshot-conf_matrix', 'chexpert-zeroshot-class_accuracies', 'chexpert-zeroshot-conf_matrix']:
                 wandb.log({f"val/{name}": val, 'epoch': epoch})
 
     return metrics

@@ -188,7 +188,7 @@ def run_mimic(model, classifier, dataloader, args):
 
 
 def zero_shot_eval(model, data, epoch, args):
-    if 'imagenet-val' not in data and 'imagenet-v2' not in data and 'mimic-5x200' not in data:
+    if 'imagenet-val' not in data and 'imagenet-v2' not in data and 'mimic-5x200' not in data and 'chexpert-5x200' not in data:
         return {}
     if args.zeroshot_frequency == 0:
         return {}
@@ -218,8 +218,9 @@ def zero_shot_eval(model, data, epoch, args):
 
         logging.info('Finished zero-shot imagenet.')
 
-    if 'mimic-5x200' in data:
-        logging.info('Starting zero-shot mimic')
+    if 'chexpert-5x200' in data or 'mimic-5x200' in data:
+        results = {}
+        logging.info('Starting zero-shot')
         logging.info('Building zero-shot classifier')
 
         # Classifier = zero shot weights for all classes
@@ -228,17 +229,30 @@ def zero_shot_eval(model, data, epoch, args):
 
         logging.info('Using classifier')
         results = {}
+        if 'mimic-5x200' in data:
+            logging.info('Starting Zero-shot MIMIC')
+            top1, top3, class_accuracies, conf_matrix, precision, recall, f1 = run_mimic(model, classifier,
+                                                                                         data['mimic-5x200'].dataloader, args)
+            results['mimic-zeroshot-top1'] = top1
+            results['mimic-zeroshot-top3'] = top3
+            results['mimic-zeroshot-class_accuracies'] = class_accuracies
+            results['mimic-zeroshot-conf_matrix'] = conf_matrix.tolist()
+            results['mimic-zeroshot-precision'] = precision
+            results['mimic-zeroshot-recall'] = recall
+            results['mimic-zeroshot-f1'] = f1
+            logging.info('Finished zero-shot MIMIC.')
 
-        top1, top3, class_accuracies, conf_matrix, precision, recall, f1 = run_mimic(model, classifier,
-                                                                                     data['mimic-5x200'].dataloader, args)
-        results['mimic-zeroshot-top1'] = top1
-        results['mimic-zeroshot-top3'] = top3
-        results['mimic-zeroshot-class_accuracies'] = class_accuracies
-        results['mimic-zeroshot-conf_matrix'] = conf_matrix.tolist()
-        results['mimic-zeroshot-precision'] = precision
-        results['mimic-zeroshot-recall'] = recall
-        results['mimic-zeroshot-f1'] = f1
-
-        logging.info('Finished zero-shot mimic-5x200.')
+        if 'chexpert-5x200' in data:
+            logging.info('Starting Zero-shot chexpert')
+            top1, top3, class_accuracies, conf_matrix, precision, recall, f1 = run_mimic(model, classifier,
+                                                                                         data['chexpert-5x200'].dataloader, args)
+            results['chexpert-zeroshot-top1'] = top1
+            results['chexpert-zeroshot-top3'] = top3
+            results['chexpert-zeroshot-class_accuracies'] = class_accuracies
+            results['chexpert-zeroshot-conf_matrix'] = conf_matrix.tolist()
+            results['chexpert-zeroshot-precision'] = precision
+            results['chexpert-zeroshot-recall'] = recall
+            results['chexpert-zeroshot-f1'] = f1
+            logging.info('Finished zero-shot chexpert.')
 
     return results

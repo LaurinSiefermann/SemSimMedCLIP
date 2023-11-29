@@ -99,6 +99,12 @@ def parse_args(args):
         help="Path to mimimc-5x200 for conducting zero shot evaluation.",
     )
     parser.add_argument(
+        "--chexpert-5x200",
+        type=str,
+        default=None,
+        help="Path to chexpert-5x200 for conducting zero shot evaluation.",
+    )
+    parser.add_argument(
         "--logs",
         type=str,
         default="/scratch1/lsiefermann/logs/",
@@ -304,13 +310,19 @@ def parse_args(args):
         "--text-similarity-model",
         default='',
         type=str,
-        help="Options are ['all-distilroberta-v1', 'all-MiniLM-L6-v2', 'sentence-transformers/LaBSE', 'princeton-nlp/sup-simcse-roberta-large' (simCSE)]"
+        help="Options are ['all-distilroberta-v1', 'all-MiniLM-L6-v2', 'sentence-transformers/LaBSE', 'princeton-nlp/sup-simcse-roberta-large' (simCSE), 'kaiserrr/Bilingual-BioSimCSE-BioLinkBERT-base', 'kamalkraj/BioSimCSE-BioLinkBERT-BASE']"
     )
     parser.add_argument(
         "--threshold",
         default=0.7151462626262626,
         type=float,
         help="Threshold for positive pair definition for text similarity model."
+    )
+    parser.add_argument(
+        "--top-k",
+        default=None,
+        type=int,
+        help="top-k for positive pair matrix"
     )
     parser.add_argument(
         "--copy-codebase",
