@@ -391,15 +391,21 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
                 return ', '.join(f"{x:.2f}" for x in tensor.tolist())
 
             # Format the positive_pairs_count tensor
-            formatted_positive_pairs_count = format_tensor_for_logging(positive_pairs_count)
+            if args.similarity_decision_1 == 'text_similarity_model' or args.similarity_decision_2 == 'text_similarity_model':
+                formatted_positive_pairs_count = format_tensor_for_logging(positive_pairs_count)
 
             if args.loss_type == 'single_feature':
                 single_feature_log_string = (
                     f"Positive Pairs: {positive_pairs_1_m.val:.2f} "
-                    f"Average positive_pairs_count: {positive_pairs_count.mean().item():.2f} "
-                    f"positive_pairs_count per row: [{formatted_positive_pairs_count}]"
                 )
                 log_string += single_feature_log_string
+
+                if args.similarity_decision_1 == 'text_similarity_model':
+                    single_feature_log_string += (
+                        f"Average positive_pairs_count: {positive_pairs_count.mean().item():.2f} "
+                        f"positive_pairs_count per row: [{formatted_positive_pairs_count}]"
+                    )
+                    log_string += single_feature_log_string
 
             if args.loss_type == 'multiple_features':
                 multiple_features_log_string = (
@@ -428,9 +434,14 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, text_simil
             if args.loss_type == 'single_feature':
                 single_features_log_data = {
                     "positive_pairs": positive_pairs_1_m.val,
-                    "positive_pairs_count (single matrix)": positive_pairs_count.mean().item(),
                 }
                 log_data.update(single_features_log_data)
+
+                if args.similarity_decision_1 == 'text_similarity_model':
+                    single_features_log_data = {
+                        "positive_pairs_count (single matrix)": positive_pairs_count.mean().item(),
+                    }
+                    log_data.update(single_features_log_data)
 
             if args.loss_type == 'multiple_features':
                 multiple_features_log_data = {

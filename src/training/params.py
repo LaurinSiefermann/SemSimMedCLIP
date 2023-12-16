@@ -406,7 +406,7 @@ def parse_args(args):
     )
     parser.add_argument(
         "--similarity-decision-2",
-        default='text_similarity_model',
+        default='',
         type=str,
         help="Specifiy method to define positive pairs for second loss level ['chexPert-labels', 'text_similarity_model']"
     )
